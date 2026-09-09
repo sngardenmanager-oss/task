@@ -1,5 +1,5 @@
-import WorkCalendarApp from './work-calendar-app';
+import AuthGate from './auth-gate';
 
 export default function Home() {
-  return <WorkCalendarApp />;
+  return <AuthGate />;
 }

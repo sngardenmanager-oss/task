@@ -1,0 +1,9 @@
+.next
+node_modules
+desktop-dist
+.open-next
+.wrangler
+.env.local
+.env.*.local
+vercel-upload-*
+*.zip

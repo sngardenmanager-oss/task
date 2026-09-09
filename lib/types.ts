@@ -10,6 +10,14 @@ export type Member = {
   active: boolean;
 };
 
+export type RegistrationRequest = {
+  id: string;
+  name: string;
+  email: string;
+  requestedAt: string;
+  emailConfirmed: boolean;
+};
+
 export type Category = { id: string; name: string; color: string; active: boolean };
 
 export type Comment = { id: string; authorId: string; body: string; createdAt: string };

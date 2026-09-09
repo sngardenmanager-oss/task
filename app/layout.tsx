@@ -1,12 +1,13 @@
 import type { Metadata } from 'next';
-import { Geist, Geist_Mono } from 'next/font/google';
 import './globals.css';
 
-const geistSans = Geist({ variable: '--font-geist-sans', subsets: ['latin'] });
-const geistMono = Geist_Mono({ variable: '--font-geist-mono', subsets: ['latin'] });
-
 export const metadata: Metadata = {
-  metadataBase: new URL('https://snoopy-garden-work-calendar.workspace-738291.chatgpt.site'),
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_SITE_URL ??
+      (process.env.VERCEL_PROJECT_PRODUCTION_URL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+        : 'http://localhost:3000'),
+  ),
   title: '스누피가든 워크 캘린더',
   description: '파크사업팀의 루틴, 현장 이슈, 행사 일정을 함께 관리하는 업무 캘린더',
   icons: { icon: '/og.png', apple: '/og.png' },
@@ -28,7 +29,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="ko">
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>{children}</body>
+      <body className="antialiased">{children}</body>
     </html>
   );
 }

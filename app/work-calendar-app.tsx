@@ -4,15 +4,24 @@ import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react
 import {
   Bell, CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, CircleAlert,
   ClipboardCheck, ClipboardList, FileText, LayoutDashboard, Leaf, Link2, ListFilter,
-  LogOut, Menu, MessageCircle, Newspaper, Pause, Pencil, Play, Plus,
+  LoaderCircle, LogOut, Menu, MessageCircle, Newspaper, Pause, Pencil, Play, Plus,
   RefreshCw, Repeat2, Search, Settings, ShieldCheck, Trash2, UserPlus, Users, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { seedState } from '@/lib/seed';
-import type { Category, Member, NewsItem, Routine, SpecialNote, Task, WorkspaceState } from '@/lib/types';
+import type { Category, Member, NewsItem, RegistrationRequest, Role, Routine, SpecialNote, Task, WorkspaceState } from '@/lib/types';
 
 type View = 'today' | 'calendar' | 'tasks' | 'routines' | 'notes' | 'team' | 'news' | 'settings' | 'notifications';
 type Modal = 'task' | 'editTask' | 'note' | 'routine' | 'routineDetail' | 'member' | 'detail' | null;
+type AppHistoryEntry = {
+  kind: 'guard' | 'screen';
+  view: View;
+  modal: Modal;
+  selectedTaskId: string | null;
+  selectedRoutineId: string | null;
+  selectedDate: string;
+};
+
+const appHistoryKey = '__snoopyWorkCalendar';
 
 const viewMeta: Record<View, { label: string; icon: typeof CalendarDays; subtitle: string }> = {
   today: { label: '오늘', icon: LayoutDashboard, subtitle: '오늘 처리해야 할 일과 확인 요청을 모았습니다.' },
@@ -82,9 +91,22 @@ function formText(form: FormData, key: string) {
   return typeof value === 'string' ? value : '';
 }
 
-export default function WorkCalendarApp() {
-  const [data, setData] = useState<WorkspaceState>(seedState);
-  const [actor, setActor] = useState<Member>(seedState.members[0]);
+export default function WorkCalendarApp({
+  initialData,
+  initialActor,
+  initialPendingRegistrations,
+  accessToken,
+  onSignOut,
+}: {
+  initialData: WorkspaceState;
+  initialActor: Member;
+  initialPendingRegistrations: RegistrationRequest[];
+  accessToken: string;
+  onSignOut: () => Promise<void>;
+}) {
+  const [data, setData] = useState<WorkspaceState>(initialData);
+  const [actor] = useState<Member>(initialActor);
+  const [pendingRegistrations, setPendingRegistrations] = useState<RegistrationRequest[]>(initialPendingRegistrations);
   const [view, setView] = useState<View>('today');
   const [modal, setModal] = useState<Modal>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -95,41 +117,104 @@ export default function WorkCalendarApp() {
   const [memberFilter, setMemberFilter] = useState('all');
   const [monthCursor, setMonthCursor] = useState(() => new Date(`${isoDate().slice(0, 7)}-01T00:00:00`));
   const [toast, setToast] = useState('');
-  const [hydrated, setHydrated] = useState(false);
   const [mobileMenu, setMobileMenu] = useState(false);
   const skipSave = useRef(true);
   const dataRef = useRef(data);
   const actorRef = useRef(actor);
+  const viewRef = useRef(view);
+  const modalRef = useRef(modal);
+  const selectedTaskIdRef = useRef(selectedTaskId);
+  const selectedRoutineIdRef = useRef(selectedRoutineId);
+  const selectedDateRef = useRef(selectedDate);
 
   useEffect(() => { dataRef.current = data; }, [data]);
   useEffect(() => { actorRef.current = actor; }, [actor]);
+  useEffect(() => { viewRef.current = view; }, [view]);
+  useEffect(() => { modalRef.current = modal; }, [modal]);
+  useEffect(() => { selectedTaskIdRef.current = selectedTaskId; }, [selectedTaskId]);
+  useEffect(() => { selectedRoutineIdRef.current = selectedRoutineId; }, [selectedRoutineId]);
+  useEffect(() => { selectedDateRef.current = selectedDate; }, [selectedDate]);
 
   useEffect(() => {
-    fetch('/api/state')
-      .then(async (response) => {
-        if (!response.ok) throw new Error('load failed');
-        return await response.json() as { state: WorkspaceState; actor: Member };
-      })
-      .then((result) => {
-        setData(result.state);
-        setActor(result.actor);
-      })
-      .catch(() => {
-        const backup = window.localStorage.getItem('snoopy-work-calendar-offline');
-        if (backup) setData(JSON.parse(backup));
-      })
-      .finally(() => setHydrated(true));
+    const currentEntry = (): AppHistoryEntry => ({
+      kind: 'screen',
+      view: viewRef.current,
+      modal: modalRef.current,
+      selectedTaskId: selectedTaskIdRef.current,
+      selectedRoutineId: selectedRoutineIdRef.current,
+      selectedDate: selectedDateRef.current,
+    });
+    const existingEntry = window.history.state?.[appHistoryKey] as AppHistoryEntry | undefined;
+
+    if (existingEntry?.kind !== 'screen') {
+      if (!existingEntry) {
+        window.history.replaceState(
+          { ...window.history.state, [appHistoryKey]: { ...currentEntry(), kind: 'guard' } },
+          '',
+          window.location.href,
+        );
+      }
+      window.history.pushState(
+        { ...window.history.state, [appHistoryKey]: currentEntry() },
+        '',
+        window.location.href,
+      );
+    } else {
+      window.history.replaceState(
+        { ...window.history.state, [appHistoryKey]: currentEntry() },
+        '',
+        window.location.href,
+      );
+    }
+
+    const handlePopState = (event: PopStateEvent) => {
+      const entry = event.state?.[appHistoryKey] as AppHistoryEntry | undefined;
+      if (!entry || entry.kind === 'guard') {
+        window.history.pushState(
+          { ...window.history.state, [appHistoryKey]: currentEntry() },
+          '',
+          window.location.href,
+        );
+        return;
+      }
+
+      viewRef.current = entry.view;
+      modalRef.current = entry.modal;
+      selectedTaskIdRef.current = entry.selectedTaskId;
+      selectedRoutineIdRef.current = entry.selectedRoutineId;
+      selectedDateRef.current = entry.selectedDate;
+      setView(entry.view);
+      setModal(entry.modal);
+      setSelectedTaskId(entry.selectedTaskId);
+      setSelectedRoutineId(entry.selectedRoutineId);
+      setSelectedDate(entry.selectedDate);
+      setMobileMenu(false);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
   useEffect(() => {
-    if (!hydrated || skipSave.current) {
+    if (skipSave.current) {
       skipSave.current = false;
       return;
     }
     const timer = window.setTimeout(async () => {
-      window.localStorage.setItem('snoopy-work-calendar-offline', JSON.stringify(data));
+      window.localStorage.setItem(`snoopy-work-calendar-offline:${actor.email.toLowerCase()}`, JSON.stringify(data));
       try {
-        const response = await fetch('/api/state', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ state: data }) });
+        const response = await fetch('/api/state', {
+          method: 'PUT',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ state: data }),
+        });
+        if (response.status === 401) {
+          await onSignOut();
+          return;
+        }
         if (!response.ok) {
           const result = await response.json() as { error?: string };
           setToast(result.error ?? '서버에 저장하지 못해 기기에 임시 저장했습니다.');
@@ -139,7 +224,7 @@ export default function WorkCalendarApp() {
       }
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [data, hydrated]);
+  }, [accessToken, actor.email, data, onSignOut]);
 
   useEffect(() => {
     if (!toast) return;
@@ -169,26 +254,67 @@ export default function WorkCalendarApp() {
     if (message) setToast(message);
   }
 
+  function pushAppHistory(overrides: Partial<AppHistoryEntry>) {
+    const entry: AppHistoryEntry = {
+      kind: 'screen',
+      view: viewRef.current,
+      modal: modalRef.current,
+      selectedTaskId: selectedTaskIdRef.current,
+      selectedRoutineId: selectedRoutineIdRef.current,
+      selectedDate: selectedDateRef.current,
+      ...overrides,
+    };
+    window.history.pushState(
+      { ...window.history.state, [appHistoryKey]: entry },
+      '',
+      window.location.href,
+    );
+  }
+
+  function openModal(nextModal: Exclude<Modal, null>, options: Partial<AppHistoryEntry> = {}) {
+    modalRef.current = nextModal;
+    if (options.selectedTaskId !== undefined) {
+      selectedTaskIdRef.current = options.selectedTaskId;
+      setSelectedTaskId(options.selectedTaskId);
+    }
+    if (options.selectedRoutineId !== undefined) {
+      selectedRoutineIdRef.current = options.selectedRoutineId;
+      setSelectedRoutineId(options.selectedRoutineId);
+    }
+    if (options.selectedDate !== undefined) {
+      selectedDateRef.current = options.selectedDate;
+      setSelectedDate(options.selectedDate);
+    }
+    setModal(nextModal);
+    pushAppHistory({ ...options, modal: nextModal });
+  }
+
+  function closeModal() {
+    const entry = window.history.state?.[appHistoryKey] as AppHistoryEntry | undefined;
+    if (entry?.kind === 'screen' && entry.modal) {
+      window.history.back();
+      return;
+    }
+    modalRef.current = null;
+    setModal(null);
+  }
+
   function openTask(taskId: string) {
-    setSelectedTaskId(taskId);
-    setModal('detail');
+    openModal('detail', { selectedTaskId: taskId });
   }
 
   function openCreateTask(date = today) {
     if (!canEdit) return setToast('댓글 사용자는 업무를 등록할 수 없습니다.');
-    setSelectedDate(date);
-    setModal('task');
+    openModal('task', { selectedDate: date });
   }
 
   function openRoutine(routineId: string) {
-    setSelectedRoutineId(routineId);
-    setModal('routineDetail');
+    openModal('routineDetail', { selectedRoutineId: routineId });
   }
 
   function editTask(taskId: string) {
     if (!canEdit) return setToast('댓글 사용자는 업무를 수정할 수 없습니다.');
-    setSelectedTaskId(taskId);
-    setModal('editTask');
+    openModal('editTask', { selectedTaskId: taskId });
   }
 
   function setTaskStatus(taskId: string, status: Task['status']) {
@@ -205,11 +331,62 @@ export default function WorkCalendarApp() {
     if (!isAdmin) return setToast('업무 삭제는 관리자만 할 수 있습니다.');
     if (!window.confirm('이 업무를 삭제할까요?')) return;
     updateData((current) => ({ ...current, tasks: current.tasks.filter((task) => task.id !== taskId) }), '업무를 삭제했습니다.');
-    setModal(null);
+    closeModal();
+  }
+
+  async function refreshPendingRegistrations() {
+    try {
+      const response = await fetch('/api/auth/registrations', {
+        headers: { authorization: `Bearer ${accessToken}` },
+        cache: 'no-store',
+      });
+      const result = await response.json() as { registrations?: RegistrationRequest[]; error?: string };
+      if (response.status === 401) {
+        await onSignOut();
+        return;
+      }
+      if (!response.ok) throw new Error(result.error ?? '가입 대기 목록을 불러오지 못했습니다.');
+      setPendingRegistrations(result.registrations ?? []);
+      setToast('가입 대기 목록을 새로고침했습니다.');
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : '가입 대기 목록을 불러오지 못했습니다.');
+    }
+  }
+
+  async function approveRegistration(id: string, role: Exclude<Role, 'admin'>, team: string) {
+    const response = await fetch('/api/auth/registrations', {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ id, role, team }),
+    });
+    const result = await response.json() as {
+      member?: Member;
+      registrations?: RegistrationRequest[];
+      error?: string;
+    };
+    if (response.status === 401) {
+      await onSignOut();
+      throw new Error('로그인이 만료되었습니다.');
+    }
+    if (!response.ok || !result.member) {
+      throw new Error(result.error ?? '가입 승인을 완료하지 못했습니다.');
+    }
+    setData((current) => ({ ...current, members: [...current.members, result.member!] }));
+    setPendingRegistrations(result.registrations ?? []);
+    setToast(`${result.member.name}님의 가입을 승인했습니다.`);
   }
 
   function navigate(next: View) {
-    setView(next);
+    if (viewRef.current !== next || modalRef.current) {
+      viewRef.current = next;
+      modalRef.current = null;
+      setView(next);
+      setModal(null);
+      pushAppHistory({ view: next, modal: null });
+    }
     setMobileMenu(false);
   }
 
@@ -274,6 +451,7 @@ export default function WorkCalendarApp() {
         <div className="flex items-center gap-2">
           <Button aria-label="알림" variant="outline" size="icon" className="relative rounded-full bg-white" onClick={() => navigate('notifications')}><Bell />{completionRequests.length > 0 && <span className="absolute -right-0.5 -top-0.5 grid size-4 place-items-center rounded-full bg-[#a83f36] text-[9px] font-black text-white">{completionRequests.length}</span>}</Button>
           <button onClick={() => navigate('settings')} className="hidden items-center gap-2 rounded-full border border-[#d8ded4] bg-white py-1 pl-1 pr-3 sm:flex"><span className="grid size-8 place-items-center rounded-full bg-[#f0c85a] text-xs font-black text-[#4f431f]">{actor.name.slice(0, 1)}</span><span className="text-sm font-bold">{actor.name}</span><span className="rounded-full bg-[#e7f0eb] px-2 py-0.5 text-[10px] font-bold text-[#2f6b4f]">{roleLabel(actor)}</span></button>
+          <Button aria-label="로그아웃" title="로그아웃" variant="outline" size="icon" className="rounded-full bg-white" onClick={() => void onSignOut()}><LogOut /></Button>
         </div>
       </header>
 
@@ -290,15 +468,14 @@ export default function WorkCalendarApp() {
             </div>
           </div>
 
-          {!hydrated && <div className="mb-4 flex items-center gap-2 rounded-xl bg-[#e7f0eb] px-4 py-3 text-sm font-bold text-[#2f6b4f]"><RefreshCw className="size-4 animate-spin" />업무 데이터를 불러오는 중입니다.</div>}
           {view === 'today' && <TodayView data={data} actor={actor} todayTasks={todayTasks} requests={completionRequests} overdue={overdue} isAdmin={isAdmin} openTask={openTask} setTaskStatus={setTaskStatus} navigate={navigate} openCreateTask={openCreateTask} />}
           {view === 'calendar' && <CalendarView data={data} tasks={visibleTasks} month={monthCursor} setMonth={setMonthCursor} openTask={openTask} openRoutine={openRoutine} openCreateTask={openCreateTask} />}
           {view === 'tasks' && <TasksView data={data} tasks={visibleTasks} statusFilter={statusFilter} setStatusFilter={setStatusFilter} memberFilter={memberFilter} setMemberFilter={setMemberFilter} openTask={openTask} />}
-          {view === 'routines' && <RoutinesView data={data} canEdit={canEdit} openCreate={() => setModal('routine')} openRoutine={openRoutine} updateData={updateData} />}
-          {view === 'notes' && <NotesView data={data} canEdit={canEdit} isAdmin={isAdmin} openCreate={() => setModal('note')} openTask={openTask} updateData={updateData} actor={actor} />}
+          {view === 'routines' && <RoutinesView data={data} canEdit={canEdit} openCreate={() => openModal('routine')} openRoutine={openRoutine} updateData={updateData} />}
+          {view === 'notes' && <NotesView data={data} canEdit={canEdit} isAdmin={isAdmin} openCreate={() => openModal('note')} openTask={openTask} updateData={updateData} actor={actor} />}
           {view === 'team' && <TeamView data={data} openTask={openTask} />}
           {view === 'news' && <NewsView data={data} isAdmin={isAdmin} updateData={updateData} />}
-          {view === 'settings' && <SettingsView data={data} isAdmin={isAdmin} openMember={() => setModal('member')} updateData={updateData} />}
+          {view === 'settings' && <SettingsView data={data} isAdmin={isAdmin} pendingRegistrations={pendingRegistrations} openMember={() => openModal('member')} refreshPendingRegistrations={refreshPendingRegistrations} approveRegistration={approveRegistration} updateData={updateData} />}
           {view === 'notifications' && <NotificationsView data={data} isAdmin={isAdmin} openTask={openTask} setTaskStatus={setTaskStatus} />}
         </section>
       </div>
@@ -307,13 +484,13 @@ export default function WorkCalendarApp() {
         {([['today',LayoutDashboard,'오늘'],['calendar',CalendarDays,'캘린더'],['add',Plus,'추가'],['notes',CircleAlert,'특이사항'],['team',Users,'팀']] as const).map(([key,Icon,label]) => <button key={key} onClick={() => key === 'add' ? openCreateTask() : navigate(key)} className={`flex flex-col items-center gap-1 rounded-xl py-2 text-[10px] font-bold ${view===key?'bg-[#e3eee7] text-[#245b43]':'text-[#59675e]'}`}><Icon className="size-4" />{label}</button>)}
       </nav>
 
-      {modal === 'task' && <TaskForm data={data} actor={actor} defaultDate={selectedDate} close={() => setModal(null)} save={(task) => updateData((current) => ({ ...current, tasks: [...current.tasks, task] }), '새 업무를 등록했습니다.')} />}
-      {modal === 'editTask' && selectedTask && <EditTaskForm data={data} task={selectedTask} close={() => setModal(null)} save={(updatedTask) => updateData((current) => ({ ...current, tasks: current.tasks.map((task) => task.id === updatedTask.id ? updatedTask : task) }), '업무 내용을 수정했습니다.')} />}
-      {modal === 'note' && <NoteForm data={data} actor={actor} close={() => setModal(null)} save={(note) => updateData((current) => ({ ...current, notes: [note, ...current.notes] }), '특이사항을 등록했습니다.')} />}
-      {modal === 'routine' && <RoutineForm data={data} close={() => setModal(null)} save={(routine) => updateData((current) => ({ ...current, routines: [...current.routines, routine] }), '새 루틴을 등록했습니다.')} />}
-      {modal === 'member' && <MemberForm close={() => setModal(null)} save={(member) => updateData((current) => ({ ...current, members: [...current.members, member] }), '사용자를 추가했습니다.')} />}
-      {modal === 'detail' && selectedTask && <TaskDetail task={selectedTask} data={data} canEdit={canEdit} isAdmin={isAdmin} close={() => setModal(null)} edit={() => editTask(selectedTask.id)} toggleChecklist={toggleChecklist} setTaskStatus={setTaskStatus} deleteTask={deleteTask} addComment={(body) => updateData((current) => ({ ...current, tasks: current.tasks.map((task) => task.id === selectedTask.id ? { ...task, comments: [...task.comments, { id: uid('comment'), authorId: actor.id, body, createdAt: new Date().toISOString() }] } : task) }), '댓글을 등록했습니다.')} />}
-      {modal === 'routineDetail' && selectedRoutine && <RoutineDetail routine={selectedRoutine} data={data} close={() => setModal(null)} />}
+      {modal === 'task' && <TaskForm data={data} actor={actor} defaultDate={selectedDate} close={closeModal} save={(task) => updateData((current) => ({ ...current, tasks: [...current.tasks, task] }), '새 업무를 등록했습니다.')} />}
+      {modal === 'editTask' && selectedTask && <EditTaskForm data={data} task={selectedTask} close={closeModal} save={(updatedTask) => updateData((current) => ({ ...current, tasks: current.tasks.map((task) => task.id === updatedTask.id ? updatedTask : task) }), '업무 내용을 수정했습니다.')} />}
+      {modal === 'note' && <NoteForm data={data} actor={actor} close={closeModal} save={(note) => updateData((current) => ({ ...current, notes: [note, ...current.notes] }), '특이사항을 등록했습니다.')} />}
+      {modal === 'routine' && <RoutineForm data={data} close={closeModal} save={(routine) => updateData((current) => ({ ...current, routines: [...current.routines, routine] }), '새 루틴을 등록했습니다.')} />}
+      {modal === 'member' && <MemberForm close={closeModal} save={(member) => updateData((current) => ({ ...current, members: [...current.members, member] }), '사용자를 추가했습니다.')} />}
+      {modal === 'detail' && selectedTask && <TaskDetail task={selectedTask} data={data} canEdit={canEdit} isAdmin={isAdmin} close={closeModal} edit={() => editTask(selectedTask.id)} toggleChecklist={toggleChecklist} setTaskStatus={setTaskStatus} deleteTask={deleteTask} addComment={(body) => updateData((current) => ({ ...current, tasks: current.tasks.map((task) => task.id === selectedTask.id ? { ...task, comments: [...task.comments, { id: uid('comment'), authorId: actor.id, body, createdAt: new Date().toISOString() }] } : task) }), '댓글을 등록했습니다.')} />}
+      {modal === 'routineDetail' && selectedRoutine && <RoutineDetail routine={selectedRoutine} data={data} close={closeModal} />}
       {toast && <output className="fixed bottom-24 left-1/2 z-[70] -translate-x-1/2 rounded-full bg-[#26352d] px-4 py-2.5 text-sm font-bold text-white shadow-xl md:bottom-7">{toast}</output>}
     </main>
   );
@@ -410,10 +587,19 @@ function NewsView({ data,isAdmin,updateData }: { data:WorkspaceState;isAdmin:boo
   return <div><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-[#748078]">조회일 기준 최근 3일 문서 {recent.length}건</p>{isAdmin&&<label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-xl bg-[#2f6b4f] px-4 text-sm font-bold text-white"><FileText className="size-4"/>Markdown 가져오기<input type="file" accept=".md,text/markdown" multiple className="sr-only" onChange={(event)=>importFiles(event.target.files)}/></label>}</div><div className="grid gap-3 lg:grid-cols-2">{recent.length?recent.map(item=><article key={item.id} className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-5"><div className="mb-3 flex items-center justify-between"><span className="rounded-full bg-[#e3eee7] px-2 py-1 text-[10px] font-black text-[#2f6b4f]">{item.collectedAt}</span><Newspaper className="size-4 text-[#6f7b73]"/></div><h3 className="font-black">{item.title}</h3><p className="mt-2 text-sm leading-6 text-[#66736b]">{item.summary}</p><div className="mt-4 flex items-center justify-between text-xs text-[#7a857e]"><span>{item.source}</span>{item.url&&<a href={item.url} target="_blank" rel="noreferrer" className="font-bold text-[#2f6b4f]">원문 보기</a>}</div></article>):<Empty title="최근 3일 이내 관광뉴스가 없습니다."/>}</div></div>;
 }
 
-function SettingsView({ data,isAdmin,openMember,updateData }: { data:WorkspaceState;isAdmin:boolean;openMember:()=>void;updateData:(fn:(data:WorkspaceState)=>WorkspaceState,message?:string)=>void }) {
+function SettingsView({ data,isAdmin,pendingRegistrations,openMember,refreshPendingRegistrations,approveRegistration,updateData }: { data:WorkspaceState;isAdmin:boolean;pendingRegistrations:RegistrationRequest[];openMember:()=>void;refreshPendingRegistrations:()=>Promise<void>;approveRegistration:(id:string,role:Exclude<Role,'admin'>,team:string)=>Promise<void>;updateData:(fn:(data:WorkspaceState)=>WorkspaceState,message?:string)=>void }) {
   function addCategory(){const name=window.prompt('새 업무 분류 이름을 입력하세요.');if(!name)return;updateData(current=>({...current,categories:[...current.categories,{id:uid('category'),name,color:'#5f7f70',active:true}]}),'업무 분류를 추가했습니다.');}
   function retire(member:Member){if(member.role==='admin')return;const admin=data.members.find(item=>item.role==='admin'&&item.active);if(!admin||!window.confirm(`${member.name} 계정을 비활성화하고 미완료 업무를 ${admin.name}님에게 인계할까요?`))return;updateData(current=>({...current,members:current.members.map(item=>item.id===member.id?{...item,active:false}:item),tasks:current.tasks.map(task=>task.assigneeId===member.id&&task.status!=='completed'?{...task,assigneeId:admin.id}:task),routines:current.routines.map(routine=>routine.assigneeId===member.id?{...routine,assigneeId:admin.id}:routine)}),'계정을 비활성화하고 미완료 업무를 인계했습니다.');}
-  return <div className="grid gap-5 xl:grid-cols-2"><section className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-5"><div className="mb-4 flex items-center justify-between"><div><h3 className="font-black">사용자와 권한</h3><p className="text-xs text-[#748078]">최종 완료 권한은 관리자만 가집니다.</p></div>{isAdmin&&<Button variant="outline" onClick={openMember}><UserPlus/>추가</Button>}</div><div className="space-y-2">{data.members.map(member=><div key={member.id} className={`flex items-center gap-3 rounded-xl border border-[#e0e3de] bg-white p-3 ${!member.active?'opacity-50':''}`}><span className="grid size-9 place-items-center rounded-full bg-[#e3eee7] text-sm font-black text-[#2f6b4f]">{member.name.slice(0,1)}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{member.name}</strong><span className="block truncate text-xs text-[#748078]">{member.email} · {roleLabel(member)}</span></span>{member.active&&member.role!=='admin'&&isAdmin&&<Button aria-label={`${member.name} 퇴사 처리`} size="sm" variant="outline" onClick={()=>retire(member)}><LogOut/>퇴사 처리</Button>}{!member.active&&<span className="text-xs font-bold">비활성</span>}</div>)}</div></section><section className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-5"><div className="mb-4 flex items-center justify-between"><div><h3 className="font-black">업무 분류</h3><p className="text-xs text-[#748078]">분류를 중단해도 과거 기록은 유지됩니다.</p></div>{isAdmin&&<Button variant="outline" onClick={addCategory}><Plus/>추가</Button>}</div><div className="space-y-2">{data.categories.map(category=><div key={category.id} className={`flex items-center gap-3 rounded-xl border border-[#e0e3de] bg-white p-3 ${!category.active?'opacity-50':''}`}><CategoryDot category={category}/><strong className="flex-1 text-sm">{category.name}</strong>{isAdmin&&<Button size="sm" variant="outline" onClick={()=>updateData(current=>({...current,categories:current.categories.map(item=>item.id===category.id?{...item,active:!item.active}:item)}),category.active?'분류를 비활성화했습니다.':'분류를 활성화했습니다.')}>{category.active?<Pause/>:<Play/>}{category.active?'중단':'복원'}</Button>}</div>)}</div></section></div>;
+  return <div className="space-y-5">{isAdmin&&<section className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-5"><div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><div className="flex items-center gap-2"><h3 className="font-black">가입 승인 대기</h3><span className="rounded-full bg-[#fff1dd] px-2 py-0.5 text-xs font-black text-[#806743]">{pendingRegistrations.length}</span></div><p className="mt-1 text-xs text-[#748078]">권한과 소속을 확인한 뒤 승인해 주세요.</p></div><Button variant="outline" onClick={()=>void refreshPendingRegistrations()}><RefreshCw/>새로고침</Button></div><div className="space-y-3">{pendingRegistrations.length?pendingRegistrations.map(registration=><PendingRegistrationCard key={registration.id} registration={registration} approveRegistration={approveRegistration}/>):<Empty title="승인을 기다리는 가입 신청이 없습니다."/>}</div></section>}<div className="grid gap-5 xl:grid-cols-2"><section className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-5"><div className="mb-4 flex items-center justify-between"><div><h3 className="font-black">사용자와 권한</h3><p className="text-xs text-[#748078]">최종 완료 권한은 관리자만 가집니다.</p></div>{isAdmin&&<Button variant="outline" onClick={openMember}><UserPlus/>추가</Button>}</div><div className="space-y-2">{data.members.map(member=><div key={member.id} className={`flex items-center gap-3 rounded-xl border border-[#e0e3de] bg-white p-3 ${!member.active?'opacity-50':''}`}><span className="grid size-9 place-items-center rounded-full bg-[#e3eee7] text-sm font-black text-[#2f6b4f]">{member.name.slice(0,1)}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{member.name}</strong><span className="block truncate text-xs text-[#748078]">{member.email} · {roleLabel(member)}</span></span>{member.active&&member.role!=='admin'&&isAdmin&&<Button aria-label={`${member.name} 퇴사 처리`} size="sm" variant="outline" onClick={()=>retire(member)}><LogOut/>퇴사 처리</Button>}{!member.active&&<span className="text-xs font-bold">비활성</span>}</div>)}</div></section><section className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-5"><div className="mb-4 flex items-center justify-between"><div><h3 className="font-black">업무 분류</h3><p className="text-xs text-[#748078]">분류를 중단해도 과거 기록은 유지됩니다.</p></div>{isAdmin&&<Button variant="outline" onClick={addCategory}><Plus/>추가</Button>}</div><div className="space-y-2">{data.categories.map(category=><div key={category.id} className={`flex items-center gap-3 rounded-xl border border-[#e0e3de] bg-white p-3 ${!category.active?'opacity-50':''}`}><CategoryDot category={category}/><strong className="flex-1 text-sm">{category.name}</strong>{isAdmin&&<Button size="sm" variant="outline" onClick={()=>updateData(current=>({...current,categories:current.categories.map(item=>item.id===category.id?{...item,active:!item.active}:item)}),category.active?'분류를 비활성화했습니다.':'분류를 활성화했습니다.')}>{category.active?<Pause/>:<Play/>}{category.active?'중단':'복원'}</Button>}</div>)}</div></section></div></div>;
+}
+
+function PendingRegistrationCard({ registration,approveRegistration }: { registration:RegistrationRequest;approveRegistration:(id:string,role:Exclude<Role,'admin'>,team:string)=>Promise<void> }) {
+  const [role,setRole]=useState<Exclude<Role,'admin'>>('member');
+  const [team,setTeam]=useState('파크사업팀');
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState('');
+  async function submit(event:FormSubmitEvent){event.preventDefault();if(!team.trim())return;setBusy(true);setError('');try{await approveRegistration(registration.id,role,team.trim());}catch(caught){setError(caught instanceof Error?caught.message:'가입 승인을 완료하지 못했습니다.');setBusy(false);}}
+  return <form onSubmit={submit} className="rounded-2xl border border-[#e0e3de] bg-white p-4"><div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-full bg-[#fff1dd] font-black text-[#806743]">{registration.name.slice(0,1)}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><strong className="text-sm">{registration.name}</strong><span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${registration.emailConfirmed?'bg-[#e7f0eb] text-[#2f6b4f]':'bg-[#f1f0eb] text-[#6a776e]'}`}>{registration.emailConfirmed?'이메일 인증됨':'승인 시 이메일 인증'}</span></div><p className="mt-1 truncate text-xs text-[#748078]">{registration.email}</p><p className="mt-1 text-[10px] text-[#929b95]">신청 {new Date(registration.requestedAt).toLocaleString('ko-KR')}</p></div></div><div className="mt-4 grid gap-2 sm:grid-cols-[1fr_150px_auto]"><input aria-label={`${registration.name} 소속`} value={team} onChange={(event)=>setTeam(event.target.value)} required className={inputClass} placeholder="소속"/><select aria-label={`${registration.name} 권한`} value={role} onChange={(event)=>setRole(event.target.value as Exclude<Role,'admin'>)} className={inputClass}><option value="member">팀원</option><option value="commenter">조회·댓글</option></select><Button type="submit" disabled={busy}>{busy?<LoaderCircle className="animate-spin"/>:<Check/>}승인</Button></div>{error&&<p role="alert" className="mt-2 rounded-lg bg-[#f7e8e4] px-3 py-2 text-xs font-semibold text-[#8d342e]">{error}</p>}</form>;
 }
 
 function NotificationsView({ data,isAdmin,openTask,setTaskStatus }: { data:WorkspaceState;isAdmin:boolean;openTask:(id:string)=>void;setTaskStatus:(id:string,status:Task['status'])=>void }) {
@@ -422,7 +608,29 @@ function NotificationsView({ data,isAdmin,openTask,setTaskStatus }: { data:Works
 }
 
 function ModalShell({ title,description,close,children }: { title:string;description:string;close:()=>void;children:React.ReactNode }) {
-  return <div className="fixed inset-0 z-[60] grid place-items-end p-0 sm:place-items-center sm:p-4"><button aria-label="대화상자 닫기" className="absolute inset-0 bg-[#17231c]/30 backdrop-blur-[2px]" onClick={close}/><dialog open aria-label={title} className="relative m-0 max-h-[92vh] w-full overflow-y-auto rounded-t-3xl bg-[#fbfaf5] p-5 text-[#26352d] shadow-2xl sm:m-auto sm:max-w-xl sm:rounded-3xl"><div className="mb-5 flex items-start justify-between gap-4"><div><h2 className="text-xl font-black">{title}</h2><p className="mt-1 text-sm text-[#748078]">{description}</p></div><Button aria-label="닫기" variant="ghost" size="icon" onClick={close}><X/></Button></div>{children}</dialog></div>;
+  useEffect(() => {
+    const body = document.body;
+    const scrollY = window.scrollY;
+    const previous = {
+      position: body.style.position,
+      top: body.style.top,
+      width: body.style.width,
+      overflow: body.style.overflow,
+    };
+    body.style.position = 'fixed';
+    body.style.top = `-${scrollY}px`;
+    body.style.width = '100%';
+    body.style.overflow = 'hidden';
+    return () => {
+      body.style.position = previous.position;
+      body.style.top = previous.top;
+      body.style.width = previous.width;
+      body.style.overflow = previous.overflow;
+      window.scrollTo(0, scrollY);
+    };
+  }, []);
+
+  return <div className="fixed inset-0 z-[60] grid place-items-end overflow-hidden p-0 sm:place-items-center sm:p-4"><button aria-label="대화상자 닫기" className="absolute inset-0 bg-[#17231c]/30 backdrop-blur-[2px]" onClick={close}/><dialog open aria-label={title} className="relative m-0 max-h-[92vh] w-full overscroll-contain overflow-y-auto rounded-t-3xl bg-[#fbfaf5] p-5 text-[#26352d] shadow-2xl sm:m-auto sm:max-w-xl sm:rounded-3xl"><div className="mb-5 flex items-start justify-between gap-4"><div><h2 className="text-xl font-black">{title}</h2><p className="mt-1 text-sm text-[#748078]">{description}</p></div><Button aria-label="닫기" variant="ghost" size="icon" onClick={close}><X/></Button></div>{children}</dialog></div>;
 }
 
 function TaskForm({ data,actor,defaultDate,close,save }: { data:WorkspaceState;actor:Member;defaultDate:string;close:()=>void;save:(task:Task)=>void }) {
@@ -459,7 +667,28 @@ function MemberForm({ close,save }: { close:()=>void;save:(member:Member)=>void 
 function TaskDetail({ task,data,canEdit,isAdmin,close,edit,toggleChecklist,setTaskStatus,deleteTask,addComment }: { task:Task;data:WorkspaceState;canEdit:boolean;isAdmin:boolean;close:()=>void;edit:()=>void;toggleChecklist:(taskId:string,checkId:string)=>void;setTaskStatus:(taskId:string,status:Task['status'])=>void;deleteTask:(taskId:string)=>void;addComment:(body:string)=>void }) {
   const [comment,setComment]=useState('');const category=data.categories.find(item=>item.id===task.categoryId);const assignee=data.members.find(member=>member.id===task.assigneeId);
   function submitComment(event:FormSubmitEvent){event.preventDefault();if(!comment.trim())return;addComment(comment.trim());setComment('');}
-  return <ModalShell title={task.title} description={`${formatDate(task.date)}${task.endDate?` ~ ${formatDate(task.endDate)}`:''} · ${category?.name} · ${assignee?.name}`} close={close}><div className="space-y-5"><div className="flex flex-wrap gap-2"><span className="rounded-full bg-[#e3eee7] px-2 py-1 text-xs font-bold text-[#2f6b4f]">{statusLabel[task.status]}</span><span className="rounded-full bg-[#f1f0eb] px-2 py-1 text-xs font-bold">{priorityLabel[task.priority]}</span>{task.endDate&&<span className="rounded-full bg-[#fff1dd] px-2 py-1 text-xs font-bold text-[#806743]">{dday(task.endDate)}</span>}</div><p className="whitespace-pre-line text-sm leading-6 text-[#5f6d64]">{task.description||'설명이 없습니다.'}</p>{task.checklist.length>0&&<section><h3 className="mb-2 text-sm font-black">체크리스트</h3><div className="space-y-2">{task.checklist.map(item=><button key={item.id} disabled={!canEdit} onClick={()=>toggleChecklist(task.id,item.id)} className="flex w-full items-center gap-2 rounded-xl bg-[#f1f2ed] p-3 text-left text-sm disabled:cursor-default"><span className={`grid size-5 place-items-center rounded border ${item.done?'border-[#2f6b4f] bg-[#2f6b4f] text-white':'border-[#aeb8b1] bg-white'}`}>{item.done&&<Check className="size-3"/>}</span><span className={item.done?'text-[#879089] line-through':''}>{item.text}</span></button>)}</div></section>}<section><h3 className="mb-2 text-sm font-black">댓글 {task.comments.length}</h3><div className="max-h-44 space-y-2 overflow-y-auto">{task.comments.map(comment=>{const author=data.members.find(member=>member.id===comment.authorId);return <div key={comment.id} className="rounded-xl bg-[#f1f2ed] p-3"><div className="mb-1 flex items-center justify-between"><strong className="text-xs">{author?.name??'사용자'}</strong><span className="text-[10px] text-[#859088]">{new Date(comment.createdAt).toLocaleString('ko-KR')}</span></div><p className="text-sm">{comment.body}</p></div>})}</div><form onSubmit={submitComment} className="mt-2 flex gap-2"><input value={comment} onChange={(event)=>setComment(event.target.value)} className={inputClass} placeholder="의견을 남겨주세요."/><Button type="submit" aria-label="댓글 등록"><MessageCircle/></Button></form></section><div className="flex flex-wrap justify-between gap-2 border-t border-[#e0e3de] pt-4"><div className="flex gap-2">{isAdmin&&<Button variant="destructive" onClick={()=>deleteTask(task.id)}><Trash2/>삭제</Button>}{canEdit&&<Button variant="outline" onClick={edit}><Pencil/>수정</Button>}</div><div className="flex flex-wrap gap-2">{canEdit&&task.status==='scheduled'&&<Button variant="outline" onClick={()=>setTaskStatus(task.id,'in_progress')}>진행 시작</Button>}{canEdit&&task.status==='in_progress'&&<Button onClick={()=>setTaskStatus(task.id,'completion_requested')}>완료 요청</Button>}{isAdmin&&task.status==='completion_requested'&&<><Button variant="outline" onClick={()=>setTaskStatus(task.id,'in_progress')}>반려</Button><Button onClick={()=>setTaskStatus(task.id,'completed')}><Check/>최종 완료</Button></>}{isAdmin&&task.status==='completed'&&<Button variant="outline" onClick={()=>setTaskStatus(task.id,'in_progress')}>다시 열기</Button>}</div></div></div></ModalShell>;
+  return <ModalShell title={task.title} description={`${formatDate(task.date)}${task.endDate?` ~ ${formatDate(task.endDate)}`:''} · ${category?.name} · ${assignee?.name}`} close={close}>
+    <div className="space-y-5">
+      <div className="flex flex-wrap gap-2"><span className="rounded-full bg-[#e3eee7] px-2 py-1 text-xs font-bold text-[#2f6b4f]">{statusLabel[task.status]}</span><span className="rounded-full bg-[#f1f0eb] px-2 py-1 text-xs font-bold">{priorityLabel[task.priority]}</span>{task.endDate&&<span className="rounded-full bg-[#fff1dd] px-2 py-1 text-xs font-bold text-[#806743]">{dday(task.endDate)}</span>}</div>
+      <p className="whitespace-pre-line text-sm leading-6 text-[#5f6d64]">{task.description||'설명이 없습니다.'}</p>
+      {task.checklist.length>0&&<section>
+        <h3 className="mb-2 text-sm font-black">체크리스트</h3>
+        <div className="space-y-2">{task.checklist.map(item=><label key={item.id} className={`flex w-full items-center gap-3 rounded-xl bg-[#f1f2ed] p-3 text-left text-sm ${canEdit?'cursor-pointer':'cursor-default'}`}>
+          <input
+            type="checkbox"
+            aria-label={`${item.text} 완료`}
+            checked={item.done}
+            disabled={!canEdit}
+            onChange={()=>toggleChecklist(task.id,item.id)}
+            className="size-5 shrink-0 accent-[#2f6b4f]"
+          />
+          <span className={item.done?'text-[#879089] line-through':''}>{item.text}</span>
+        </label>)}</div>
+      </section>}
+      <section><h3 className="mb-2 text-sm font-black">댓글 {task.comments.length}</h3><div className="max-h-44 space-y-2 overflow-y-auto">{task.comments.map(comment=>{const author=data.members.find(member=>member.id===comment.authorId);return <div key={comment.id} className="rounded-xl bg-[#f1f2ed] p-3"><div className="mb-1 flex items-center justify-between"><strong className="text-xs">{author?.name??'사용자'}</strong><span className="text-[10px] text-[#859088]">{new Date(comment.createdAt).toLocaleString('ko-KR')}</span></div><p className="text-sm">{comment.body}</p></div>})}</div><form onSubmit={submitComment} className="mt-2 flex gap-2"><input value={comment} onChange={(event)=>setComment(event.target.value)} className={inputClass} placeholder="의견을 남겨주세요."/><Button type="submit" aria-label="댓글 등록"><MessageCircle/></Button></form></section>
+      <div className="flex flex-wrap justify-between gap-2 border-t border-[#e0e3de] pt-4"><div className="flex gap-2">{isAdmin&&<Button variant="destructive" onClick={()=>deleteTask(task.id)}><Trash2/>삭제</Button>}{canEdit&&<Button variant="outline" onClick={edit}><Pencil/>수정</Button>}</div><div className="flex flex-wrap gap-2">{canEdit&&task.status==='scheduled'&&<Button variant="outline" onClick={()=>setTaskStatus(task.id,'in_progress')}>진행 시작</Button>}{canEdit&&task.status==='in_progress'&&<Button onClick={()=>setTaskStatus(task.id,'completion_requested')}>완료 요청</Button>}{isAdmin&&task.status==='completion_requested'&&<><Button variant="outline" onClick={()=>setTaskStatus(task.id,'in_progress')}>반려</Button><Button onClick={()=>setTaskStatus(task.id,'completed')}><Check/>최종 완료</Button></>}{isAdmin&&task.status==='completed'&&<Button variant="outline" onClick={()=>setTaskStatus(task.id,'in_progress')}>다시 열기</Button>}</div></div>
+    </div>
+  </ModalShell>;
 }
 
 function Field({ label,children }: { label:string;children:React.ReactNode }) { return <label className="block"><span className="mb-1.5 block text-xs font-black text-[#617068]">{label}</span>{children}</label>; }
