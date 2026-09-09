@@ -48,6 +48,7 @@ export type Routine = {
   assigneeId: string;
   cadence: string;
   checklist: string[];
+  checklistDone?: boolean[];
   referenceUrl?: string;
   active: boolean;
   nextDate: string;

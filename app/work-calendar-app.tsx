@@ -327,6 +327,19 @@ export default function WorkCalendarApp({
     updateData((current) => ({ ...current, tasks: current.tasks.map((task) => task.id === taskId ? { ...task, checklist: task.checklist.map((item) => item.id === checkId ? { ...item, done: !item.done } : item) } : task) }));
   }
 
+  function toggleRoutineChecklist(routineId: string, index: number) {
+    if (!canEdit) return setToast('댓글 사용자는 체크리스트를 수정할 수 없습니다.');
+    updateData((current) => ({
+      ...current,
+      routines: current.routines.map((routine) => {
+        if (routine.id !== routineId) return routine;
+        const checklistDone = [...(routine.checklistDone ?? [])];
+        checklistDone[index] = !checklistDone[index];
+        return { ...routine, checklistDone };
+      }),
+    }));
+  }
+
   function deleteTask(taskId: string) {
     if (!isAdmin) return setToast('업무 삭제는 관리자만 할 수 있습니다.');
     if (!window.confirm('이 업무를 삭제할까요?')) return;
@@ -490,7 +503,7 @@ export default function WorkCalendarApp({
       {modal === 'routine' && <RoutineForm data={data} close={closeModal} save={(routine) => updateData((current) => ({ ...current, routines: [...current.routines, routine] }), '새 루틴을 등록했습니다.')} />}
       {modal === 'member' && <MemberForm close={closeModal} save={(member) => updateData((current) => ({ ...current, members: [...current.members, member] }), '사용자를 추가했습니다.')} />}
       {modal === 'detail' && selectedTask && <TaskDetail task={selectedTask} data={data} canEdit={canEdit} isAdmin={isAdmin} close={closeModal} edit={() => editTask(selectedTask.id)} toggleChecklist={toggleChecklist} setTaskStatus={setTaskStatus} deleteTask={deleteTask} addComment={(body) => updateData((current) => ({ ...current, tasks: current.tasks.map((task) => task.id === selectedTask.id ? { ...task, comments: [...task.comments, { id: uid('comment'), authorId: actor.id, body, createdAt: new Date().toISOString() }] } : task) }), '댓글을 등록했습니다.')} />}
-      {modal === 'routineDetail' && selectedRoutine && <RoutineDetail routine={selectedRoutine} data={data} close={closeModal} />}
+      {modal === 'routineDetail' && selectedRoutine && <InteractiveRoutineDetail routine={selectedRoutine} data={data} canEdit={canEdit} close={closeModal} toggleChecklist={toggleRoutineChecklist} />}
       {toast && <output className="fixed bottom-24 left-1/2 z-[70] -translate-x-1/2 rounded-full bg-[#26352d] px-4 py-2.5 text-sm font-bold text-white shadow-xl md:bottom-7">{toast}</output>}
     </main>
   );
@@ -507,6 +520,14 @@ function SidebarContent({ view, navigate, openCreateTask }: { view: View; naviga
 
 function CategoryDot({ category }: { category?: Category }) {
   return <span className="inline-block size-2.5 shrink-0 rounded-full" style={{ background: category?.color ?? '#9ca3af' }} />;
+}
+
+function LinkifiedText({ text }: { text: string }) {
+  return <>{text.split(/(https?:\/\/[^\s]+)/g).map((part, index) =>
+    /^https?:\/\//.test(part)
+      ? <a key={index} href={part} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()} className="inline-flex items-center gap-1 break-all font-bold text-[#2f6b4f] underline decoration-[#2f6b4f]/35 underline-offset-2"><Link2 className="size-3 shrink-0"/>{part}</a>
+      : part
+  )}</>;
 }
 
 function TaskCard({ task, data, openTask }: { task: Task; data: WorkspaceState; openTask: (id: string) => void }) {
@@ -648,6 +669,29 @@ function RoutineForm({ data,close,save }: { data:WorkspaceState;close:()=>void;s
   return <ModalShell title="새 루틴" description="반복 주기와 기본 체크리스트를 등록합니다." close={close}><form onSubmit={submit} className="space-y-4"><Field label="루틴명"><input name="title" required className={inputClass}/></Field><div className="grid gap-3 sm:grid-cols-2"><Field label="담당자"><select name="assignee" className={inputClass}>{data.members.filter(member=>member.active&&member.role!=='commenter').map(member=><option key={member.id} value={member.id}>{member.name}</option>)}</select></Field><Field label="분류"><select name="category" className={inputClass}>{data.categories.filter(item=>item.active).map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></Field></div><div className="grid gap-3 sm:grid-cols-2"><Field label="반복 주기"><input name="cadence" required className={inputClass} placeholder="예: 매주 월요일"/></Field><Field label="다음 실행일"><input name="nextDate" type="date" required defaultValue={isoDate()} className={inputClass}/></Field></div><Field label="참고 링크"><input name="referenceUrl" type="url" className={inputClass} placeholder="https://"/></Field><Field label="체크리스트"><textarea name="checklist" className={textAreaClass} placeholder="한 줄에 하나씩 입력"/></Field><div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={close}>취소</Button><Button type="submit">루틴 등록</Button></div></form></ModalShell>;
 }
 
+function InteractiveRoutineDetail({ routine,data,canEdit,close,toggleChecklist }: { routine:Routine;data:WorkspaceState;canEdit:boolean;close:()=>void;toggleChecklist:(routineId:string,index:number)=>void }) {
+  const category=data.categories.find(item=>item.id===routine.categoryId);
+  const member=data.members.find(item=>item.id===routine.assigneeId);
+  const completed=routine.checklist.filter((_,index)=>routine.checklistDone?.[index]).length;
+  return <ModalShell title={routine.title} description="등록된 루틴 상세 내용" close={close}>
+    <div className="space-y-5">
+      <div className="flex flex-wrap gap-2"><span className={`rounded-full px-2 py-1 text-xs font-black ${routine.active?'bg-[#e3eee7] text-[#2f6b4f]':'bg-[#ecebe6] text-[#7b847e]'}`}>{routine.active?'사용 중':'중단됨'}</span><span className="rounded-full bg-[#f1f0eb] px-2 py-1 text-xs font-bold">{category?.name}</span></div>
+      <dl className="grid gap-3 rounded-2xl bg-[#f1f2ed] p-4 text-sm sm:grid-cols-2"><div><dt className="text-xs font-bold text-[#748078]">담당자</dt><dd className="mt-1 font-black">{member?.name??'미배정'}</dd></div><div><dt className="text-xs font-bold text-[#748078]">반복 주기</dt><dd className="mt-1 font-black">{routine.cadence}</dd></div><div><dt className="text-xs font-bold text-[#748078]">다음 실행일</dt><dd className="mt-1 font-black">{formatDate(routine.nextDate)}</dd></div><div><dt className="text-xs font-bold text-[#748078]">캘린더 표시</dt><dd className="mt-1 font-black">{routine.active?'자동 표시':'표시 중단'}</dd></div></dl>
+      <section>
+        <h3 className="mb-2 text-sm font-black">체크리스트 {completed}/{routine.checklist.length}</h3>
+        {routine.checklist.length?<ul className="space-y-2">{routine.checklist.map((item,index)=>{
+          const done=Boolean(routine.checklistDone?.[index]);
+          return <li key={`${routine.id}-${index}`} className="flex items-start gap-3 rounded-xl border border-[#e0e3de] bg-white p-3 text-sm">
+            <input type="checkbox" aria-label={`${item} 완료`} checked={done} disabled={!canEdit} onChange={()=>toggleChecklist(routine.id,index)} className="mt-0.5 size-5 shrink-0 accent-[#2f6b4f]"/>
+            <span className={`min-w-0 flex-1 ${done?'text-[#879089] line-through':''}`}><LinkifiedText text={item}/></span>
+          </li>;
+        })}</ul>:<p className="text-sm text-[#748078]">등록된 체크리스트가 없습니다.</p>}
+      </section>
+      {routine.referenceUrl&&<a href={routine.referenceUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-xl border border-[#d8ded4] bg-white px-4 py-3 text-sm font-bold text-[#2f6b4f]"><Link2 className="size-4"/>참고 링크 새 창에서 열기</a>}
+    </div>
+  </ModalShell>;
+}
+
 function RoutineDetail({ routine,data,close }: { routine:Routine;data:WorkspaceState;close:()=>void }) {
   const category=data.categories.find(item=>item.id===routine.categoryId);
   const member=data.members.find(item=>item.id===routine.assigneeId);
@@ -670,7 +714,7 @@ function TaskDetail({ task,data,canEdit,isAdmin,close,edit,toggleChecklist,setTa
   return <ModalShell title={task.title} description={`${formatDate(task.date)}${task.endDate?` ~ ${formatDate(task.endDate)}`:''} · ${category?.name} · ${assignee?.name}`} close={close}>
     <div className="space-y-5">
       <div className="flex flex-wrap gap-2"><span className="rounded-full bg-[#e3eee7] px-2 py-1 text-xs font-bold text-[#2f6b4f]">{statusLabel[task.status]}</span><span className="rounded-full bg-[#f1f0eb] px-2 py-1 text-xs font-bold">{priorityLabel[task.priority]}</span>{task.endDate&&<span className="rounded-full bg-[#fff1dd] px-2 py-1 text-xs font-bold text-[#806743]">{dday(task.endDate)}</span>}</div>
-      <p className="whitespace-pre-line text-sm leading-6 text-[#5f6d64]">{task.description||'설명이 없습니다.'}</p>
+      <p className="whitespace-pre-line text-sm leading-6 text-[#5f6d64]"><LinkifiedText text={task.description||'설명이 없습니다.'}/></p>
       {task.checklist.length>0&&<section>
         <h3 className="mb-2 text-sm font-black">체크리스트</h3>
         <div className="space-y-2">{task.checklist.map(item=><label key={item.id} className={`flex w-full items-center gap-3 rounded-xl bg-[#f1f2ed] p-3 text-left text-sm ${canEdit?'cursor-pointer':'cursor-default'}`}>
@@ -682,7 +726,7 @@ function TaskDetail({ task,data,canEdit,isAdmin,close,edit,toggleChecklist,setTa
             onChange={()=>toggleChecklist(task.id,item.id)}
             className="size-5 shrink-0 accent-[#2f6b4f]"
           />
-          <span className={item.done?'text-[#879089] line-through':''}>{item.text}</span>
+          <span className={item.done?'text-[#879089] line-through':''}><LinkifiedText text={item.text}/></span>
         </label>)}</div>
       </section>}
       <section><h3 className="mb-2 text-sm font-black">댓글 {task.comments.length}</h3><div className="max-h-44 space-y-2 overflow-y-auto">{task.comments.map(comment=>{const author=data.members.find(member=>member.id===comment.authorId);return <div key={comment.id} className="rounded-xl bg-[#f1f2ed] p-3"><div className="mb-1 flex items-center justify-between"><strong className="text-xs">{author?.name??'사용자'}</strong><span className="text-[10px] text-[#859088]">{new Date(comment.createdAt).toLocaleString('ko-KR')}</span></div><p className="text-sm">{comment.body}</p></div>})}</div><form onSubmit={submitComment} className="mt-2 flex gap-2"><input value={comment} onChange={(event)=>setComment(event.target.value)} className={inputClass} placeholder="의견을 남겨주세요."/><Button type="submit" aria-label="댓글 등록"><MessageCircle/></Button></form></section>
