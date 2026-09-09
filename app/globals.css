@@ -137,3 +137,10 @@ body {
 section[class~="bg-[#2f6b4f]"] {
   background-color: #275b43;
 }
+
+[class~="text-[#708076]"],
+[class~="text-[#6a776e]"],
+[class~="text-[#748078]"],
+[class~="text-[#66736b]"] {
+  color: #59675e;
+}

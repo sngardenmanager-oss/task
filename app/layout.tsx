@@ -9,6 +9,7 @@ export const metadata: Metadata = {
   metadataBase: new URL('https://snoopy-garden-work-calendar.workspace-738291.chatgpt.site'),
   title: '스누피가든 워크 캘린더',
   description: '파크사업팀의 루틴, 현장 이슈, 행사 일정을 함께 관리하는 업무 캘린더',
+  icons: { icon: '/og.png', apple: '/og.png' },
   openGraph: {
     title: '스누피가든 워크 캘린더',
     description: '루틴·현장 이슈·행사 일정을 한곳에서 관리하세요.',

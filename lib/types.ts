@@ -56,6 +56,8 @@ export type SpecialNote = {
   createdBy: string;
   createdAt: string;
   convertedTaskId?: string;
+  completed?: boolean;
+  completedAt?: string;
 };
 
 export type NewsItem = {
