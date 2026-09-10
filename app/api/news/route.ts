@@ -29,7 +29,17 @@ export async function GET(request: Request) {
       readWorkspaceState(),
     ]);
     requireWorkspaceMember(state, user.email!);
-    const items = await readNewsDigest();
+    const { searchParams } = new URL(request.url);
+    const limitValue = searchParams.get('limit');
+    const requestedLimit = limitValue ? Number(limitValue) : Number.NaN;
+    const limit = Number.isInteger(requestedLimit)
+      ? Math.min(Math.max(requestedLimit, 1), 50)
+      : null;
+    const storedItems = await readNewsDigest();
+    const sortedItems = [...storedItems].sort((a, b) =>
+      b.collectedAt.localeCompare(a.collectedAt),
+    );
+    const items = limit ? sortedItems.slice(0, limit) : sortedItems;
     return Response.json(
       { items },
       { headers: { 'cache-control': 'private, no-store, max-age=0' } },

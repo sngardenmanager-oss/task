@@ -377,20 +377,6 @@ function exportCalendarIcal(data: WorkspaceState) {
   );
 }
 
-const newsStopWords = new Set([
-  '관련',
-  '대한',
-  '통해',
-  '위한',
-  '에서',
-  '으로',
-  '관광',
-  '뉴스',
-  '자료',
-  '이번',
-  '최근',
-]);
-
 export default function WorkCalendarApp({
   initialData,
   initialActor,
@@ -437,6 +423,8 @@ export default function WorkCalendarApp({
   const selectedRoutineIdRef = useRef(selectedRoutineId);
   const selectedDateRef = useRef(selectedDate);
   const collectingDesktopNews = useRef(false);
+  const newsFullyLoaded = useRef(false);
+  const newsLoadingFull = useRef(false);
 
   useEffect(() => {
     dataRef.current = data;
@@ -610,7 +598,7 @@ export default function WorkCalendarApp({
     const controller = new AbortController();
     void (async () => {
       try {
-        const response = await fetch('/api/news', {
+        const response = await fetch('/api/news?limit=10', {
           headers: { authorization: `Bearer ${accessToken}` },
           cache: 'no-store',
           signal: controller.signal,
@@ -625,7 +613,7 @@ export default function WorkCalendarApp({
         }
         if (!response.ok)
           throw new Error(result.error ?? '관광뉴스를 불러오지 못했습니다.');
-        setNewsItems(result.items ?? []);
+        if (!newsFullyLoaded.current) setNewsItems(result.items ?? []);
       } catch {
         if (controller.signal.aborted) return;
         // 관광뉴스는 부가 기능이라 실패해도 조용히 넘어간다.
@@ -648,14 +636,14 @@ export default function WorkCalendarApp({
         setToast('관광뉴스 폴더를 읽지 못했습니다. 폴더 경로를 확인해 주세요.');
         return;
       }
-      if (result.files.length === 0) return;
+      if (result.skipped) return;
       const response = await fetch('/api/news/digest', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ files: result.files }),
+        body: JSON.stringify({ items: result.items }),
       });
       const digestResult = (await response.json()) as {
         error?: string;
@@ -671,6 +659,10 @@ export default function WorkCalendarApp({
         );
         return;
       }
+      if (result.snapshotId) {
+        await window.snoopyDesktop!.markNewsSynced(result.snapshotId);
+      }
+      newsFullyLoaded.current = true;
       setNewsItems(digestResult.items ?? []);
     })().catch(() => setToast('관광뉴스 자동 동기화를 완료하지 못했습니다.'));
   }, [accessToken, actor.role, onSignOut]);
@@ -986,6 +978,38 @@ export default function WorkCalendarApp({
     }
   }
 
+  async function loadAllNews() {
+    if (newsFullyLoaded.current || newsLoadingFull.current) return;
+    newsLoadingFull.current = true;
+    try {
+      const response = await fetch('/api/news', {
+        headers: { authorization: `Bearer ${accessToken}` },
+        cache: 'no-store',
+      });
+      const result = (await response.json()) as {
+        items?: NewsItem[];
+        error?: string;
+      };
+      if (response.status === 401) {
+        await onSignOut();
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(result.error ?? '관광뉴스를 불러오지 못했습니다.');
+      }
+      newsFullyLoaded.current = true;
+      setNewsItems(result.items ?? []);
+    } catch (error) {
+      setToast(
+        error instanceof Error
+          ? error.message
+          : '관광뉴스를 불러오지 못했습니다.',
+      );
+    } finally {
+      newsLoadingFull.current = false;
+    }
+  }
+
   async function importNewsFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
     const imported: NewsItem[] = [];
@@ -997,12 +1021,7 @@ export default function WorkCalendarApp({
       imported.push({
         id: uid('news'),
         title,
-        summary:
-          text
-            .replace(/^#.*$/m, '')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .slice(0, 320) || '내용 없음',
+        category: '직접 등록',
         source: file.name,
         collectedAt: isoDate(),
         url,
@@ -1041,8 +1060,8 @@ export default function WorkCalendarApp({
   async function editNewsItem(item: NewsItem) {
     const title = window.prompt('뉴스 제목', item.title);
     if (title === null || !title.trim()) return;
-    const summary = window.prompt('뉴스 요약', item.summary);
-    if (summary === null || !summary.trim()) return;
+    const category = window.prompt('카테고리', item.category);
+    if (category === null || !category.trim()) return;
     const source = window.prompt('출처', item.source);
     if (source === null || !source.trim()) return;
     const collectedAt = window.prompt('등록일(YYYY-MM-DD)', item.collectedAt);
@@ -1053,7 +1072,7 @@ export default function WorkCalendarApp({
     const nextItem: NewsItem = {
       ...item,
       title: title.trim(),
-      summary: summary.trim(),
+      category: category.trim(),
       source: source.trim(),
       collectedAt,
       url: normalizeUrl(url) || undefined,
@@ -1157,6 +1176,7 @@ export default function WorkCalendarApp({
       pendingRegistrationsLoaded.current = true;
       void refreshPendingRegistrations(true);
     }
+    if (next === 'news') void loadAllNews();
     if (viewRef.current !== next || modalRef.current) {
       viewRef.current = next;
       modalRef.current = null;
@@ -1866,7 +1886,10 @@ function TodayView({
         (a.endDate ?? a.date).localeCompare(b.endDate ?? b.date),
     );
   const recentNews = news
-    .filter((item) => dayDifference(item.collectedAt, isoDate()) <= 3)
+    .filter((item) => {
+      const age = dayDifference(item.collectedAt, isoDate());
+      return age >= 0 && age <= 2;
+    })
     .sort((a, b) => b.collectedAt.localeCompare(a.collectedAt));
   return (
     <div className="space-y-5">
@@ -3111,27 +3134,21 @@ function TeamView({
   );
 }
 
-function tourismTokens(text: string) {
-  return (text.toLowerCase().match(/[가-힣a-z]{2,}/g) ?? []).filter(
-    (token) => !newsStopWords.has(token),
-  );
-}
-
-function rankTourismNews(items: NewsItem[]) {
-  const frequency = new Map<string, number>();
-  items.forEach((item) =>
-    new Set(tourismTokens(`${item.title} ${item.summary}`)).forEach((token) =>
-      frequency.set(token, (frequency.get(token) ?? 0) + 1),
-    ),
-  );
-  return [...items].sort((a, b) => {
-    const score = (item: NewsItem) =>
-      tourismTokens(item.title).reduce(
-        (sum, token) => sum + (frequency.get(token) ?? 0),
-        0,
-      );
-    return score(b) - score(a) || b.collectedAt.localeCompare(a.collectedAt);
-  });
+function groupNewsByCategory(items: NewsItem[]) {
+  const groups = new Map<string, NewsItem[]>();
+  for (const item of items) {
+    const list = groups.get(item.category) ?? [];
+    list.push(item);
+    groups.set(item.category, list);
+  }
+  return [...groups.entries()]
+    .map(([category, categoryItems]) => ({
+      category,
+      items: categoryItems.sort((a, b) =>
+        b.collectedAt.localeCompare(a.collectedAt),
+      ),
+    }))
+    .sort((a, b) => b.items.length - a.items.length);
 }
 
 function NewsView({
@@ -3147,39 +3164,17 @@ function NewsView({
   onEdit: (item: NewsItem) => void;
   onDelete: (item: NewsItem) => void;
 }) {
-  const recent = rankTourismNews(
-    news.filter((item) => dayDifference(item.collectedAt, isoDate()) <= 3),
-  );
-  const keywordCounts = new Map<string, number>();
-  recent.forEach((item) =>
-    tourismTokens(item.title).forEach((token) =>
-      keywordCounts.set(token, (keywordCounts.get(token) ?? 0) + 1),
-    ),
-  );
-  const keywords = [...keywordCounts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 6)
-    .map(([keyword]) => keyword);
+  const recent = news.filter((item) => {
+    const age = dayDifference(item.collectedAt, isoDate());
+    return age >= 0 && age <= 2;
+  });
+  const groups = groupNewsByCategory(recent);
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-sm text-[#748078]">
-            최근 3일 문서 중 주요 뉴스 {recent.length}건
-          </p>
-          {keywords.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {keywords.map((keyword) => (
-                <span
-                  key={keyword}
-                  className="rounded-full bg-[#e3eee7] px-2 py-1 text-[10px] font-black text-[#2f6b4f]"
-                >
-                  #{keyword}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
+        <p className="text-sm text-[#748078]">
+          최근 3일 이내 {groups.length}개 카테고리에서 {recent.length}건
+        </p>
         {isAdmin && (
           <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-xl bg-[#2f6b4f] px-4 text-sm font-bold text-white">
             <FileText className="size-4" />
@@ -3194,57 +3189,70 @@ function NewsView({
           </label>
         )}
       </div>
-      <div className="grid gap-3 lg:grid-cols-2">
-        {recent.length ? (
-          recent.map((item) => (
-            <article
-              key={item.id}
-              className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-5"
+      {groups.length ? (
+        <div className="grid gap-3 lg:grid-cols-2">
+          {groups.map((group, groupIndex) => (
+            <section
+              key={group.category}
+              className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-4 [contain-intrinsic-size:auto_240px] [content-visibility:auto]"
             >
-              <div className="mb-3 flex items-center justify-between">
-                <span className="rounded-full bg-[#e3eee7] px-2 py-1 text-[10px] font-black text-[#2f6b4f]">
-                  {item.collectedAt}
+              <h3 className="mb-2 flex items-center gap-2 font-black">
+                <Newspaper className="size-4 shrink-0 text-[#6f7b73]" />
+                <span className="truncate">
+                  {groupIndex + 1}. {group.category}
                 </span>
-                <Newspaper className="size-4 text-[#6f7b73]" />
+                <span className="shrink-0 text-xs font-normal text-[#748078]">
+                  {group.items.length}건
+                </span>
+              </h3>
+              <div className="max-h-48 space-y-1 overflow-y-auto pr-1">
+                {group.items.map((item, itemIndex) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2"
+                  >
+                    <span className="min-w-0 truncate text-sm">
+                      {itemIndex + 1}) {item.title}
+                    </span>
+                    <div className="flex shrink-0 items-center gap-2 text-xs">
+                      {item.url && (
+                        <a
+                          href={item.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-bold text-[#2f6b4f]"
+                        >
+                          원문가기
+                        </a>
+                      )}
+                      {isAdmin && (
+                        <>
+                          <button
+                            onClick={() => onEdit(item)}
+                            aria-label={`${item.title} 수정`}
+                            className="text-[#2f6b4f]"
+                          >
+                            <Pencil className="size-3.5" />
+                          </button>
+                          <button
+                            onClick={() => onDelete(item)}
+                            aria-label={`${item.title} 삭제`}
+                            className="text-[#a83f36]"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
-              <h3 className="font-black">{item.title}</h3>
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs text-[#7a857e]">
-                <span>{item.source}</span>
-                <div className="flex gap-2">
-                  {item.url && (
-                    <a
-                      href={item.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-bold text-[#2f6b4f]"
-                    >
-                      원문 보기
-                    </a>
-                  )}
-                  {isAdmin && (
-                    <>
-                      <button
-                        onClick={() => onEdit(item)}
-                        className="font-bold text-[#2f6b4f]"
-                      >
-                        수정
-                      </button>
-                      <button
-                        onClick={() => onDelete(item)}
-                        className="font-bold text-[#a83f36]"
-                      >
-                        삭제
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-            </article>
-          ))
-        ) : (
-          <Empty title="최근 3일 이내 관광뉴스가 없습니다." />
-        )}
-      </div>
+            </section>
+          ))}
+        </div>
+      ) : (
+        <Empty title="최근 3일 이내 관광뉴스가 없습니다." />
+      )}
     </div>
   );
 }

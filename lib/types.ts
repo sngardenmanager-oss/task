@@ -97,7 +97,7 @@ export type SpecialNote = {
 export type NewsItem = {
   id: string;
   title: string;
-  summary: string;
+  category: string;
   source: string;
   collectedAt: string;
   url?: string;
@@ -116,14 +116,19 @@ declare global {
   interface Window {
     snoopyDesktop?: {
       collectRecentNews: () => Promise<{
-        files: {
+        items: {
           id: string;
-          name: string;
-          content: string;
-          modifiedAt: string;
+          title: string;
+          category: string;
+          source: string;
+          url?: string;
+          pubDate: string;
         }[];
+        snapshotId: string;
+        skipped: boolean;
         error?: string;
       }>;
+      markNewsSynced: (snapshotId: string) => Promise<boolean>;
     };
   }
 

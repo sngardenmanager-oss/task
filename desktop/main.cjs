@@ -22,70 +22,97 @@ const newsFolder =
     '뉴스모음',
   );
 
-const NEWS_LOOKBACK_MS = 3 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const KOREA_UTC_OFFSET_MS = 9 * 60 * 60 * 1000;
+const dashboardDataPath = path.join(newsFolder, '_dashboard_data.json');
 
-async function listNewsFiles(directory, depth = 0) {
-  if (depth > 4 || !fs.existsSync(directory)) return [];
-  const allowed = new Set(['.md', '.txt', '.json', '.csv', '.html']);
-  const entries = await fs.promises.readdir(directory, { withFileTypes: true });
-  const groups = await Promise.all(
-    entries.map(async (entry) => {
-      const fullPath = path.join(directory, entry.name);
-      if (entry.isDirectory()) return listNewsFiles(fullPath, depth + 1);
-      if (
-        !entry.isFile() ||
-        !allowed.has(path.extname(entry.name).toLowerCase())
-      ) {
-        return [];
-      }
-      const stat = await fs.promises.stat(fullPath);
-      return [
-        {
-          fullPath,
-          modifiedAt: stat.mtime.toISOString(),
-          mtimeMs: stat.mtimeMs,
-        },
-      ];
-    }),
-  );
-  return groups.flat();
+function getNewsSyncStatePath() {
+  return path.join(app.getPath('userData'), 'news-source-sync.json');
 }
 
-// 최근 3일 이내에 수정된 파일 전체를 매번 다시 스캔해서 돌려준다. 동기화
-// 상태를 저장하지 않으므로 프로그램을 열 때마다 최신 목록을 그대로 얻는다.
-async function readNewsFiles(directory) {
-  const cutoff = Date.now() - NEWS_LOOKBACK_MS;
-  const recentFiles = (await listNewsFiles(directory))
-    .filter((file) => file.mtimeMs >= cutoff)
-    .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+function recentKoreaDates(count = 3) {
+  const koreaNow = Date.now() + KOREA_UTC_OFFSET_MS;
+  return new Set(
+    Array.from({ length: count }, (_, index) =>
+      new Date(koreaNow - index * DAY_MS).toISOString().slice(0, 10),
+    ),
+  );
+}
 
-  return Promise.all(
-    recentFiles.map(async ({ fullPath, modifiedAt, mtimeMs }) => {
-      const relativePath = path.relative(newsFolder, fullPath);
-      const content = (await fs.promises.readFile(fullPath, 'utf8')).slice(
-        0,
-        30000,
-      );
-      return {
+async function readLastNewsSnapshot() {
+  try {
+    const raw = await fs.promises.readFile(getNewsSyncStatePath(), 'utf8');
+    const state = JSON.parse(raw);
+    return typeof state.snapshotId === 'string' ? state.snapshotId : '';
+  } catch {
+    return '';
+  }
+}
+
+// 뉴스 크롤러(별도 프로그램)가 관리하는 카테고리별 기사 아카이브를 그대로
+// 읽는다. 카테고리, 실제 기사 URL, 발행일이 이미 정확히 들어있어서 문서를
+// 직접 파싱해 제목/링크를 추측할 필요가 없다.
+async function collectRecentNewsItems() {
+  if (!fs.existsSync(dashboardDataPath)) {
+    return { items: [], snapshotId: '', skipped: false };
+  }
+  const stat = await fs.promises.stat(dashboardDataPath);
+  const snapshotId = `${appUrl}:${stat.size}:${stat.mtimeMs}`;
+  if ((await readLastNewsSnapshot()) === snapshotId) {
+    return { items: [], snapshotId, skipped: true };
+  }
+  const raw = await fs.promises.readFile(dashboardDataPath, 'utf8');
+  const data = JSON.parse(raw);
+  const includedDates = recentKoreaDates();
+  const items = [];
+  for (const [category, articles] of Object.entries(data)) {
+    if (!Array.isArray(articles)) continue;
+    for (const article of articles) {
+      const pubDate =
+        typeof article.pub_date === 'string'
+          ? article.pub_date.slice(0, 10)
+          : '';
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(pubDate)) continue;
+      if (!includedDates.has(pubDate)) continue;
+      const title =
+        typeof article.title === 'string' ? article.title.trim() : '';
+      if (!title) continue;
+      const url = typeof article.url === 'string' ? article.url.trim() : '';
+      items.push({
         id: crypto
           .createHash('sha1')
-          .update(`${relativePath}:${mtimeMs}`)
+          .update(`${category}:${url || title}`)
           .digest('hex'),
-        name: relativePath,
-        content,
-        modifiedAt,
-      };
-    }),
-  );
+        title,
+        category,
+        source: article.press || article.source || '',
+        url: url || undefined,
+        pubDate,
+      });
+    }
+  }
+  return { items, snapshotId, skipped: false };
 }
 
 ipcMain.handle('news:collect-recent', async () => {
   try {
-    const files = await readNewsFiles(newsFolder);
-    return { files };
+    return await collectRecentNewsItems();
   } catch (error) {
-    return { files: [], error: String(error) };
+    return { items: [], snapshotId: '', skipped: false, error: String(error) };
   }
+});
+
+ipcMain.handle('news:mark-synced', async (_event, snapshotId) => {
+  if (typeof snapshotId !== 'string' || !snapshotId) return false;
+  await fs.promises.mkdir(path.dirname(getNewsSyncStatePath()), {
+    recursive: true,
+  });
+  await fs.promises.writeFile(
+    getNewsSyncStatePath(),
+    JSON.stringify({ snapshotId, syncedAt: new Date().toISOString() }),
+    'utf8',
+  );
+  return true;
 });
 
 function writeSmokeResult(result) {

@@ -187,16 +187,14 @@ export const seedNews: NewsItem[] = [
   {
     id: 'news-1',
     title: '제주 가을 관광 프로그램 확대',
-    summary:
-      '가을 체류형 관광과 지역 연계 프로그램이 확대되고 있어 행사 및 제휴 기회 검토가 필요합니다.',
+    category: '제주관광',
     source: '관광뉴스 수집 문서',
     collectedAt: '2026-09-08',
   },
   {
     id: 'news-2',
     title: '지역 관광시설 안전점검 강화',
-    summary:
-      '야외 시설과 다중이용 동선에 대한 사전 점검 중요성이 커지고 있습니다.',
+    category: '제주 관광지 방문객 수',
     source: '관광뉴스 수집 문서',
     collectedAt: '2026-09-07',
   },
