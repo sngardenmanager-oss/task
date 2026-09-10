@@ -115,22 +115,15 @@ export type WorkspaceState = {
 declare global {
   interface Window {
     snoopyDesktop?: {
-      collectNewsOnceDaily: () => Promise<{
-        skipped: boolean;
-        date: string;
+      collectRecentNews: () => Promise<{
         files: {
           id: string;
           name: string;
           content: string;
           modifiedAt: string;
         }[];
-        fileHashes: Record<string, string>;
         error?: string;
       }>;
-      markNewsSynced: (payload: {
-        date: string;
-        fileHashes: Record<string, string>;
-      }) => Promise<{ ok: boolean }>;
     };
   }
 

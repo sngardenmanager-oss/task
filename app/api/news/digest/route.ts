@@ -4,7 +4,7 @@ import {
   authenticateRequest,
   requireWorkspaceMember,
 } from '@/lib/auth-server';
-import { summarizeNewsWithGemini } from '@/lib/gemini-news';
+import { buildNewsDigest } from '@/lib/news-digest';
 import { readNewsDigest, writeNewsDigest } from '@/lib/news-store';
 import { readWorkspaceState } from '@/lib/workspace-store';
 
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     }
 
     const files = body.files ?? [];
-    const digest = await summarizeNewsWithGemini(files);
+    const digest = buildNewsDigest(files);
     const existing = await readNewsDigest();
     const manualItems = existing.filter(
       (item) => !item.id.startsWith(DIGEST_ID_PREFIX),

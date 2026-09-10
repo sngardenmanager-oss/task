@@ -643,19 +643,12 @@ export default function WorkCalendarApp({
       return;
     collectingDesktopNews.current = true;
     void (async () => {
-      const result = await window.snoopyDesktop!.collectNewsOnceDaily();
-      if (result.skipped) return;
+      const result = await window.snoopyDesktop!.collectRecentNews();
       if (result.error) {
         setToast('관광뉴스 폴더를 읽지 못했습니다. 폴더 경로를 확인해 주세요.');
         return;
       }
-      if (result.files.length === 0) {
-        await window.snoopyDesktop!.markNewsSynced({
-          date: result.date,
-          fileHashes: result.fileHashes,
-        });
-        return;
-      }
+      if (result.files.length === 0) return;
       const response = await fetch('/api/news/digest', {
         method: 'POST',
         headers: {
@@ -674,25 +667,13 @@ export default function WorkCalendarApp({
       }
       if (!response.ok) {
         setToast(
-          digestResult.error ??
-            '최근 3일 관광뉴스를 정리하지 못했습니다. 다음 실행 때 다시 시도합니다.',
+          digestResult.error ?? '최근 3일 관광뉴스를 정리하지 못했습니다.',
         );
         return;
       }
       setNewsItems(digestResult.items ?? []);
-      await window.snoopyDesktop!.markNewsSynced({
-        date: result.date,
-        fileHashes: result.fileHashes,
-      });
-      setToast(
-        `최근 3일 관광뉴스 ${result.files.length}건을 정리해 공용 관광뉴스로 반영했습니다.`,
-      );
-    })().catch(() =>
-      setToast(
-        '관광뉴스 자동 동기화를 완료하지 못했습니다. 다음 실행 때 다시 시도합니다.',
-      ),
-    );
-  }, [accessToken, actor.email, actor.role, onSignOut]);
+    })().catch(() => setToast('관광뉴스 자동 동기화를 완료하지 못했습니다.'));
+  }, [accessToken, actor.role, onSignOut]);
 
   const selectedTask =
     data.tasks.find((task) => task.id === selectedTaskId) ?? null;
@@ -1884,9 +1865,9 @@ function TodayView({
         priorityOrder[a.priority] - priorityOrder[b.priority] ||
         (a.endDate ?? a.date).localeCompare(b.endDate ?? b.date),
     );
-  const recentNews = [...news]
-    .sort((a, b) => b.collectedAt.localeCompare(a.collectedAt))
-    .slice(0, 3);
+  const recentNews = news
+    .filter((item) => dayDifference(item.collectedAt, isoDate()) <= 3)
+    .sort((a, b) => b.collectedAt.localeCompare(a.collectedAt));
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
@@ -2094,25 +2075,35 @@ function TodayView({
             전체 보기
           </Button>
         </div>
-        <div className="grid gap-3 lg:grid-cols-3">
-          {recentNews.length ? (
-            recentNews.map((item) => (
-              <article key={item.id} className="rounded-2xl bg-[#f1f2ed] p-4">
-                <p className="text-[10px] font-black text-[#2f6b4f]">
-                  {item.collectedAt} · {item.source}
-                </p>
-                <h4 className="mt-2 text-sm font-black">{item.title}</h4>
-                <p className="mt-2 line-clamp-3 text-xs leading-5 text-[#66736b]">
-                  {item.summary}
-                </p>
-              </article>
-            ))
-          ) : (
-            <div className="lg:col-span-3">
-              <Empty title="등록된 관광뉴스가 없습니다." />
-            </div>
-          )}
-        </div>
+        {recentNews.length ? (
+          <div className="max-h-60 space-y-2 overflow-y-auto pr-1">
+            {recentNews.map((item) => (
+              <div
+                key={item.id}
+                className="flex items-center justify-between gap-3 rounded-xl bg-[#f1f2ed] px-4 py-3"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-bold">{item.title}</p>
+                  <p className="text-[10px] text-[#748078]">
+                    {item.collectedAt} · {item.source}
+                  </p>
+                </div>
+                {item.url && (
+                  <a
+                    href={item.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 text-xs font-bold text-[#2f6b4f]"
+                  >
+                    원문보기
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Empty title="최근 3일 이내 등록된 관광뉴스가 없습니다." />
+        )}
       </section>
     </div>
   );
@@ -3158,7 +3149,7 @@ function NewsView({
 }) {
   const recent = rankTourismNews(
     news.filter((item) => dayDifference(item.collectedAt, isoDate()) <= 3),
-  ).slice(0, 30);
+  );
   const keywordCounts = new Map<string, number>();
   recent.forEach((item) =>
     tourismTokens(item.title).forEach((token) =>
@@ -3217,9 +3208,6 @@ function NewsView({
                 <Newspaper className="size-4 text-[#6f7b73]" />
               </div>
               <h3 className="font-black">{item.title}</h3>
-              <p className="mt-2 text-sm leading-6 text-[#66736b]">
-                {item.summary}
-              </p>
               <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs text-[#7a857e]">
                 <span>{item.source}</span>
                 <div className="flex gap-2">
