@@ -3675,24 +3675,30 @@ function AdminMasterEditPanel({
               key={category.id}
               className="flex items-center gap-2 rounded-xl bg-[#f1f2ed] p-3"
             >
-              <input
-                type="color"
-                aria-label={`${category.name} 색상 선택`}
-                value={category.color}
-                onChange={(event) => {
-                  const color = event.target.value;
-                  updateData(
-                    (current) => ({
-                      ...current,
-                      categories: current.categories.map((item) =>
-                        item.id === category.id ? { ...item, color } : item,
-                      ),
-                    }),
-                    '업무 분류 색상을 변경했습니다.',
-                  );
-                }}
-                className="size-8 shrink-0 cursor-pointer rounded-full border border-[#d8ded4] bg-transparent p-0"
-              />
+              <label
+                title={`${category.name} 색상 변경`}
+                className="relative flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition hover:bg-[#e1e5dd] focus-within:ring-2 focus-within:ring-[#2f6b4f]/40"
+              >
+                <input
+                  type="color"
+                  aria-label={`${category.name} 색상 선택`}
+                  value={category.color}
+                  onChange={(event) => {
+                    const color = event.target.value;
+                    updateData(
+                      (current) => ({
+                        ...current,
+                        categories: current.categories.map((item) =>
+                          item.id === category.id ? { ...item, color } : item,
+                        ),
+                      }),
+                      '업무 분류 색상을 변경했습니다.',
+                    );
+                  }}
+                  className="absolute inset-0 size-full cursor-pointer opacity-0"
+                />
+                <CategoryDot category={category} />
+              </label>
               <strong className="min-w-0 flex-1 truncate text-sm">
                 {category.name}
               </strong>
