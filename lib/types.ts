@@ -1,5 +1,9 @@
 export type Role = 'admin' | 'member' | 'commenter';
-export type TaskStatus = 'scheduled' | 'in_progress' | 'completion_requested' | 'completed';
+export type TaskStatus =
+  | 'scheduled'
+  | 'in_progress'
+  | 'completion_requested'
+  | 'completed';
 
 export type Member = {
   id: string;
@@ -18,9 +22,27 @@ export type RegistrationRequest = {
   emailConfirmed: boolean;
 };
 
-export type Category = { id: string; name: string; color: string; active: boolean };
+export type Category = {
+  id: string;
+  name: string;
+  color: string;
+  active: boolean;
+};
 
-export type Comment = { id: string; authorId: string; body: string; createdAt: string };
+export type Comment = {
+  id: string;
+  authorId: string;
+  body: string;
+  createdAt: string;
+};
+
+export type ReferenceLink = {
+  id: string;
+  title: string;
+  url: string;
+  /** 0이면 첫 체크 항목 앞, 1이면 첫 항목 뒤에 표시합니다. */
+  afterChecklistIndex: number;
+};
 
 export type Task = {
   id: string;
@@ -49,6 +71,8 @@ export type Routine = {
   cadence: string;
   checklist: string[];
   checklistDone?: boolean[];
+  referenceLinks?: ReferenceLink[];
+  /** 예전 데이터 호환용입니다. 새 데이터는 referenceLinks를 사용합니다. */
   referenceUrl?: string;
   active: boolean;
   nextDate: string;
@@ -67,6 +91,7 @@ export type SpecialNote = {
   convertedTaskId?: string;
   completed?: boolean;
   completedAt?: string;
+  comments?: Comment[];
 };
 
 export type NewsItem = {
@@ -85,9 +110,27 @@ export type WorkspaceState = {
   routines: Routine[];
   notes: SpecialNote[];
   news: NewsItem[];
+  deletedIds?: string[];
 };
 
 declare global {
+  interface Window {
+    snoopyDesktop?: {
+      collectNewsOnceDaily: () => Promise<{
+        skipped: boolean;
+        date: string;
+        files: {
+          id: string;
+          name: string;
+          content: string;
+          modifiedAt: string;
+        }[];
+        error?: string;
+      }>;
+      markNewsSynced: (date: string) => Promise<{ ok: boolean }>;
+    };
+  }
+
   interface Document {
     modelContext?: {
       registerTool: (
@@ -96,8 +139,20 @@ declare global {
           title?: string;
           description: string;
           inputSchema: Record<string, unknown>;
-          annotations?: { readOnlyHint?: boolean; untrustedContentHint?: boolean };
-          execute: (input: unknown) => Promise<unknown> | Record<string, unknown> | unknown[] | string | number | boolean | null;
+          annotations?: {
+            readOnlyHint?: boolean;
+            untrustedContentHint?: boolean;
+          };
+          execute: (
+            input: unknown,
+          ) =>
+            | Promise<unknown>
+            | Record<string, unknown>
+            | unknown[]
+            | string
+            | number
+            | boolean
+            | null;
         },
         options?: { signal?: AbortSignal },
       ) => void | Promise<void>;
