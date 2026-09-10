@@ -1393,16 +1393,28 @@ export default function WorkCalendarApp({
               </p>
             </div>
             <div className="flex gap-2">
-              <div className="relative flex-1 sm:w-64 sm:flex-none">
-                <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#89938c]" />
-                <input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  aria-label="업무 검색"
-                  placeholder="업무 검색"
-                  className={`${inputClass} pl-9`}
-                />
-              </div>
+              {view === 'today' ? (
+                <Button
+                  variant="outline"
+                  className="h-11 rounded-xl bg-white"
+                  disabled={refreshing}
+                  onClick={() => void refreshWorkspace()}
+                >
+                  <RefreshCw className={refreshing ? 'animate-spin' : ''} />
+                  전체 새로고침
+                </Button>
+              ) : (
+                <div className="relative flex-1 sm:w-64 sm:flex-none">
+                  <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#89938c]" />
+                  <input
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    aria-label="업무 검색"
+                    placeholder="업무 검색"
+                    className={`${inputClass} pl-9`}
+                  />
+                </div>
+              )}
               {canEdit && (
                 <Button
                   className="h-11 rounded-xl bg-[#2f6b4f] px-4 text-white hover:bg-[#255940]"
@@ -2723,6 +2735,8 @@ function NotesView({
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [comment, setComment] = useState('');
+  const [editingNote, setEditingNote] = useState<SpecialNote | null>(null);
+  const [viewingNote, setViewingNote] = useState<SpecialNote | null>(null);
   const activeNotes = [...data.notes]
     .filter((note) => !note.completed)
     .sort(
@@ -2812,36 +2826,13 @@ function NotesView({
   }
   function editNote(note: SpecialNote) {
     if (!isAdmin) return;
-    const body = window.prompt('특이사항 내용을 수정하세요.', note.body);
-    if (body === null || !body.trim()) return;
-    const location = window.prompt('위치를 수정하세요.', note.location);
-    if (location === null || !location.trim()) return;
-    const date = window.prompt('발생일(YYYY-MM-DD)', note.date);
-    if (date === null || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-    const categoryName = window.prompt(
-      '분류 이름',
-      data.categories.find((item) => item.id === note.categoryId)?.name ?? '',
-    );
-    if (categoryName === null) return;
-    const categoryId =
-      data.categories.find((item) => item.name === categoryName.trim())?.id ??
-      note.categoryId;
-    const urgent = window.confirm('긴급 특이사항으로 표시할까요?');
+    setEditingNote(note);
+  }
+  function saveNote(next: SpecialNote) {
     updateData(
       (current) => ({
         ...current,
-        notes: current.notes.map((item) =>
-          item.id === note.id
-            ? {
-                ...item,
-                body: body.trim(),
-                location: location.trim(),
-                date,
-                categoryId,
-                urgent,
-              }
-            : item,
-        ),
+        notes: current.notes.map((item) => (item.id === next.id ? next : item)),
       }),
       '특이사항을 수정했습니다.',
     );
@@ -2901,10 +2892,19 @@ function NotesView({
                 </span>
               </div>
               <h3
-                className={`mt-3 font-black ${archived ? 'line-through' : ''}`}
+                className={`mt-3 line-clamp-4 font-black whitespace-pre-wrap ${archived ? 'line-through' : ''}`}
               >
                 {note.body}
               </h3>
+              {(note.body.length > 160 || note.body.split('\n').length > 4) && (
+                <button
+                  type="button"
+                  onClick={() => setViewingNote(note)}
+                  className="mt-1 text-xs font-bold text-[#2f6b4f]"
+                >
+                  전체보기
+                </button>
+              )}
               <p className="mt-2 text-sm text-[#748078]">
                 {formatDate(note.date)} · {note.location} · {author?.name}
               </p>
@@ -3067,6 +3067,25 @@ function NotesView({
           )}
         </div>
       </section>
+      {editingNote && (
+        <EditNoteForm
+          data={data}
+          note={editingNote}
+          close={() => setEditingNote(null)}
+          save={saveNote}
+        />
+      )}
+      {viewingNote && (
+        <ModalShell
+          title={viewingNote.label}
+          description={`${formatDate(viewingNote.date)} · ${viewingNote.location} · ${data.categories.find((item) => item.id === viewingNote.categoryId)?.name ?? ''}`}
+          close={() => setViewingNote(null)}
+        >
+          <p className="max-h-[60vh] overflow-y-auto whitespace-pre-wrap text-sm leading-6">
+            {viewingNote.body}
+          </p>
+        </ModalShell>
+      )}
     </div>
   );
 }
@@ -4551,6 +4570,101 @@ function NoteForm({
             취소
           </Button>
           <Button type="submit">특이사항 등록</Button>
+        </div>
+      </form>
+    </ModalShell>
+  );
+}
+
+function EditNoteForm({
+  data,
+  note,
+  close,
+  save,
+}: {
+  data: WorkspaceState;
+  note: SpecialNote;
+  close: () => void;
+  save: (note: SpecialNote) => void;
+}) {
+  function submit(event: FormSubmitEvent) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    save({
+      ...note,
+      date: formText(form, 'date'),
+      categoryId: formText(form, 'category'),
+      location: formText(form, 'location'),
+      body: formText(form, 'body'),
+      urgent: form.get('urgent') === 'on',
+    });
+    close();
+  }
+  return (
+    <ModalShell
+      title="특이사항 수정"
+      description="내용, 위치, 분류를 변경할 수 있습니다."
+      close={close}
+    >
+      <form onSubmit={submit} className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="발생일">
+            <input
+              name="date"
+              type="date"
+              required
+              defaultValue={note.date}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="위치">
+            <input
+              name="location"
+              required
+              defaultValue={note.location}
+              className={inputClass}
+              placeholder="예: 야외가든"
+            />
+          </Field>
+        </div>
+        <Field label="분류">
+          <select
+            name="category"
+            defaultValue={note.categoryId}
+            className={inputClass}
+          >
+            {data.categories
+              .filter((item) => item.active)
+              .map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+          </select>
+        </Field>
+        <Field label="내용">
+          <textarea
+            name="body"
+            required
+            defaultValue={note.body}
+            className={`${textAreaClass} min-h-40`}
+            placeholder="무슨 일이 있었는지 적어주세요."
+          />
+        </Field>
+        <label className="flex items-center gap-2 rounded-xl bg-[#fff1dd] p-3 text-sm font-bold">
+          <input
+            name="urgent"
+            type="checkbox"
+            defaultChecked={note.urgent}
+            className="size-4 accent-[#c9574d]"
+          />
+          긴급 확인이 필요한 특이사항
+        </label>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={close}>
+            취소
+          </Button>
+          <Button type="submit">저장</Button>
         </div>
       </form>
     </ModalShell>
