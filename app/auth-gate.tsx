@@ -48,13 +48,15 @@ export default function AuthGate() {
     };
   }, [supabase]);
 
+  const accessToken = session?.access_token;
+
   useEffect(() => {
-    if (!session?.access_token) return;
+    if (!accessToken) return;
     const controller = new AbortController();
     void (async () => {
       try {
         const response = await fetch('/api/state', {
-          headers: { authorization: `Bearer ${session.access_token}` },
+          headers: { authorization: `Bearer ${accessToken}` },
           cache: 'no-store',
           signal: controller.signal,
         });
@@ -75,7 +77,7 @@ export default function AuthGate() {
       }
     })();
     return () => controller.abort();
-  }, [reloadToken, session?.user.id]);
+  }, [accessToken, reloadToken]);
 
   const signOut = useCallback(async () => {
     setGate({ kind: 'checking' });

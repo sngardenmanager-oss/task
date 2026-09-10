@@ -83,7 +83,7 @@ function createWindow() {
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    void shell.openExternal(url);
     return { action: 'deny' };
   });
 
@@ -111,8 +111,8 @@ function createWindow() {
     }
   });
 
-  window.loadURL(appUrl);
+  void window.loadURL(appUrl);
 }
 
-app.whenReady().then(createWindow);
+void app.whenReady().then(createWindow);
 app.on('window-all-closed', () => app.quit());

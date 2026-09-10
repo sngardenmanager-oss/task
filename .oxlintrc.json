@@ -29,7 +29,17 @@
     "build/**",
     "dist/**",
     "coverage/**",
+    "components/ui/**",
+    "hooks/use-mobile.ts",
     "next-env.d.ts"
+  ],
+  "overrides": [
+    {
+      "files": ["desktop/**/*.cjs"],
+      "rules": {
+        "typescript/no-require-imports": "off"
+      }
+    }
   ],
   "rules": {
     "no-array-constructor": "error",

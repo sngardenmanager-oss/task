@@ -420,27 +420,6 @@ const newsStopWords = new Set([
   '최근',
 ]);
 
-function rankedNews(items: NewsItem[]) {
-  const frequencies = new Map<string, number>();
-  for (const item of items) {
-    for (const word of `${item.title} ${item.summary}`.match(
-      /[가-힣A-Za-z]{2,}/g,
-    ) ?? []) {
-      const key = word.toLowerCase();
-      if (!newsStopWords.has(key))
-        frequencies.set(key, (frequencies.get(key) ?? 0) + 1);
-    }
-  }
-  return [...items].sort((a, b) => {
-    const score = (item: NewsItem) =>
-      (item.title.match(/[가-힣A-Za-z]{2,}/g) ?? []).reduce(
-        (total, word) => total + (frequencies.get(word.toLowerCase()) ?? 0),
-        0,
-      );
-    return b.collectedAt.localeCompare(a.collectedAt) || score(b) - score(a);
-  });
-}
-
 export default function WorkCalendarApp({
   initialData,
   initialActor,
@@ -510,18 +489,21 @@ export default function WorkCalendarApp({
 
   useEffect(() => {
     const key = `snoopy-work-calendar-offline:${actor.email.toLowerCase()}`;
-    try {
-      const raw = window.localStorage.getItem(key);
-      if (!raw) return;
-      const offline = JSON.parse(raw) as WorkspaceState;
-      const recovered = mergeWorkspaceStates(initialData, offline);
-      if (JSON.stringify(recovered) !== JSON.stringify(initialData)) {
-        setData(recovered);
-        setToast('기기에 남아 있던 업무 기록을 서버 데이터와 합쳤습니다.');
+    const timer = window.setTimeout(() => {
+      try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return;
+        const offline = JSON.parse(raw) as WorkspaceState;
+        const recovered = mergeWorkspaceStates(initialData, offline);
+        if (JSON.stringify(recovered) !== JSON.stringify(initialData)) {
+          setData(recovered);
+          setToast('기기에 남아 있던 업무 기록을 서버 데이터와 합쳤습니다.');
+        }
+      } catch {
+        window.localStorage.removeItem(key);
       }
-    } catch {
-      window.localStorage.removeItem(key);
-    }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [actor.email, initialData]);
 
   useEffect(() => {
@@ -2283,6 +2265,7 @@ function DayItemsModal({
             <button
               key={task.id}
               type="button"
+              aria-label={`일정 열기: ${task.title}`}
               className="flex w-full items-start gap-3 rounded-2xl border border-[#dfe4dc] bg-white p-3 text-left hover:bg-[#f3f6f2]"
               onClick={() => {
                 close();
@@ -2540,204 +2523,6 @@ function RoutinesView({
           );
         })}
       </div>
-    </div>
-  );
-}
-
-function LegacyNotesView({
-  data,
-  canEdit,
-  isAdmin,
-  openCreate,
-  openTask,
-  updateData,
-  actor,
-}: {
-  data: WorkspaceState;
-  canEdit: boolean;
-  isAdmin: boolean;
-  openCreate: () => void;
-  openTask: (id: string) => void;
-  updateData: (
-    fn: (data: WorkspaceState) => WorkspaceState,
-    message?: string,
-  ) => void;
-  actor: Member;
-}) {
-  function convert(note: SpecialNote) {
-    if (note.convertedTaskId) return openTask(note.convertedTaskId);
-    const task: Task = {
-      id: uid('task'),
-      title: note.body.slice(0, 40),
-      description: `${note.label}\n위치: ${note.location}\n${note.body}`,
-      date: note.date,
-      categoryId: note.categoryId,
-      assigneeId: defaultAssigneeId(data, actor),
-      collaborators: [],
-      priority: note.urgent ? 'urgent' : 'normal',
-      status: 'scheduled',
-      type: 'issue',
-      checklist: [],
-      comments: [],
-      sourceNoteId: note.id,
-      createdBy: actor.id,
-      createdAt: new Date().toISOString(),
-    };
-    updateData(
-      (current) => ({
-        ...current,
-        tasks: [...current.tasks, task],
-        notes: current.notes.map((item) =>
-          item.id === note.id ? { ...item, convertedTaskId: task.id } : item,
-        ),
-      }),
-      '특이사항을 정식 업무로 전환했습니다.',
-    );
-  }
-  const activeNotes = [...data.notes]
-    .filter((note) => !note.completed)
-    .sort(
-      (a, b) =>
-        Number(b.urgent) - Number(a.urgent) ||
-        b.date.localeCompare(a.date) ||
-        a.label.localeCompare(b.label),
-    );
-  const archivedNotes = [...data.notes]
-    .filter((note) => note.completed)
-    .sort((a, b) =>
-      (b.completedAt ?? b.createdAt).localeCompare(
-        a.completedAt ?? a.createdAt,
-      ),
-    );
-  function toggleNote(note: SpecialNote) {
-    if (!isAdmin) return;
-    const completed = !note.completed;
-    updateData(
-      (current) => ({
-        ...current,
-        notes: current.notes.map((item) =>
-          item.id === note.id
-            ? {
-                ...item,
-                completed,
-                completedAt: completed ? new Date().toISOString() : undefined,
-              }
-            : item,
-        ),
-      }),
-      completed
-        ? '특이사항을 완료 보관함으로 이동했습니다.'
-        : '특이사항을 진행 목록으로 복원했습니다.',
-    );
-  }
-  function NoteCard({
-    note,
-    archived = false,
-  }: {
-    note: SpecialNote;
-    archived?: boolean;
-  }) {
-    const category = data.categories.find(
-      (item) => item.id === note.categoryId,
-    );
-    const author = data.members.find((member) => member.id === note.createdBy);
-    return (
-      <article
-        className={`rounded-3xl border bg-[#fbfaf5] p-5 ${note.urgent && !archived ? 'border-[#e3b5ae]' : 'border-[#d8ded4]'} ${archived ? 'opacity-65' : ''}`}
-      >
-        <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
-          <div className="flex min-w-0 flex-1 items-start gap-3">
-            <input
-              aria-label={`${note.label} 완료`}
-              type="checkbox"
-              checked={Boolean(note.completed)}
-              disabled={!isAdmin}
-              readOnly
-              onClick={() => toggleNote(note)}
-              className="mt-1 size-5 shrink-0 accent-[#2f6b4f]"
-            />
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-full bg-[#f0c85a] px-2 py-1 text-[10px] font-black">
-                  {note.label}
-                </span>
-                {note.urgent && (
-                  <span className="rounded-full bg-[#fae0dc] px-2 py-1 text-[10px] font-black text-[#9b453c]">
-                    긴급
-                  </span>
-                )}
-                <span className="flex items-center gap-1 text-xs font-bold text-[#748078]">
-                  <CategoryDot category={category} />
-                  {category?.name}
-                </span>
-              </div>
-              <h3
-                className={`mt-3 font-black ${archived ? 'line-through' : ''}`}
-              >
-                {note.body}
-              </h3>
-              <p className="mt-2 text-sm text-[#748078]">
-                {formatDate(note.date)} · {note.location} · {author?.name}
-              </p>
-            </div>
-          </div>
-          {isAdmin && !archived && (
-            <Button variant="outline" onClick={() => convert(note)}>
-              {note.convertedTaskId ? <FileText /> : <RefreshCw />}
-              {note.convertedTaskId ? '연결 업무 보기' : '업무로 전환'}
-            </Button>
-          )}
-        </div>
-      </article>
-    );
-  }
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-[#748078]">
-          완료 체크는 관리자만 가능하며 완료 항목은 아래 보관함으로 이동합니다.
-        </p>
-        {canEdit && (
-          <Button onClick={openCreate}>
-            <Plus />
-            특이사항 등록
-          </Button>
-        )}
-      </div>
-      <section>
-        <h3 className="mb-3 font-black">
-          진행 중 특이사항 {activeNotes.length}
-        </h3>
-        <div className="space-y-3">
-          {activeNotes.length ? (
-            activeNotes.map((note) => <NoteCard key={note.id} note={note} />)
-          ) : (
-            <Empty title="진행 중인 특이사항이 없습니다." />
-          )}
-        </div>
-      </section>
-      <section className="rounded-3xl border border-[#d8ded4] bg-[#efeee8] p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <div>
-            <h3 className="font-black">완료 보관함</h3>
-            <p className="text-xs text-[#748078]">
-              완료된 특이사항을 스크롤해 확인할 수 있습니다.
-            </p>
-          </div>
-          <span className="rounded-full bg-white px-2 py-1 text-xs font-black">
-            {archivedNotes.length}건
-          </span>
-        </div>
-        <div className="max-h-80 space-y-3 overflow-y-auto pr-1">
-          {archivedNotes.length ? (
-            archivedNotes.map((note) => (
-              <NoteCard key={note.id} note={note} archived />
-            ))
-          ) : (
-            <Empty title="보관된 특이사항이 없습니다." />
-          )}
-        </div>
-      </section>
     </div>
   );
 }
@@ -3173,111 +2958,6 @@ function TeamView({
             </article>
           );
         })}
-    </div>
-  );
-}
-
-function LegacyNewsView({
-  data,
-  isAdmin,
-  updateData,
-}: {
-  data: WorkspaceState;
-  isAdmin: boolean;
-  updateData: (
-    fn: (data: WorkspaceState) => WorkspaceState,
-    message?: string,
-  ) => void;
-}) {
-  async function importFiles(files: FileList | null) {
-    if (!files) return;
-    const imported: NewsItem[] = [];
-    for (const file of Array.from(files)) {
-      const text = await file.text();
-      const title =
-        text.match(/^#\s+(.+)$/m)?.[1] ?? file.name.replace(/\.md$/i, '');
-      const url = text.match(/https?:\/\/\S+/)?.[0];
-      imported.push({
-        id: uid('news'),
-        title,
-        summary:
-          text
-            .replace(/^#.*$/m, '')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .slice(0, 180) || '내용 없음',
-        source: file.name,
-        collectedAt: isoDate(),
-        url,
-      });
-    }
-    updateData(
-      (current) => ({ ...current, news: [...imported, ...current.news] }),
-      `${imported.length}개의 관광뉴스 문서를 가져왔습니다.`,
-    );
-  }
-  const recent = data.news.filter(
-    (item) =>
-      (new Date(isoDate()).getTime() - new Date(item.collectedAt).getTime()) /
-        86400000 <=
-      3,
-  );
-  return (
-    <div>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-[#748078]">
-          조회일 기준 최근 3일 문서 {recent.length}건
-        </p>
-        {isAdmin && (
-          <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-xl bg-[#2f6b4f] px-4 text-sm font-bold text-white">
-            <FileText className="size-4" />
-            Markdown 가져오기
-            <input
-              type="file"
-              accept=".md,text/markdown"
-              multiple
-              className="sr-only"
-              onChange={(event) => importFiles(event.target.files)}
-            />
-          </label>
-        )}
-      </div>
-      <div className="grid gap-3 lg:grid-cols-2">
-        {recent.length ? (
-          recent.map((item) => (
-            <article
-              key={item.id}
-              className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-5"
-            >
-              <div className="mb-3 flex items-center justify-between">
-                <span className="rounded-full bg-[#e3eee7] px-2 py-1 text-[10px] font-black text-[#2f6b4f]">
-                  {item.collectedAt}
-                </span>
-                <Newspaper className="size-4 text-[#6f7b73]" />
-              </div>
-              <h3 className="font-black">{item.title}</h3>
-              <p className="mt-2 text-sm leading-6 text-[#66736b]">
-                {item.summary}
-              </p>
-              <div className="mt-4 flex items-center justify-between text-xs text-[#7a857e]">
-                <span>{item.source}</span>
-                {item.url && (
-                  <a
-                    href={item.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-bold text-[#2f6b4f]"
-                  >
-                    원문 보기
-                  </a>
-                )}
-              </div>
-            </article>
-          ))
-        ) : (
-          <Empty title="최근 3일 이내 관광뉴스가 없습니다." />
-        )}
-      </div>
     </div>
   );
 }
@@ -3719,7 +3399,7 @@ function downloadBlob(blob: Blob, fileName: string) {
 }
 
 function csvCell(value: unknown) {
-  const text = String(value ?? '');
+  const text = cellText(value);
   return `"${text.replaceAll('"', '""')}"`;
 }
 
@@ -3736,7 +3416,17 @@ function cellText(value: unknown): string {
     if (typeof item.text === 'string') return item.text;
     if (item.richText) return item.richText.map((part) => part.text).join('');
   }
-  return String(value).trim();
+  if (typeof value === 'string') return value.trim();
+  if (
+    typeof value === 'number' ||
+    typeof value === 'bigint' ||
+    typeof value === 'boolean'
+  ) {
+    return String(value);
+  }
+  if (typeof value === 'symbol') return value.description ?? '';
+  if (typeof value === 'function') return value.name;
+  return '';
 }
 
 function SettingsView({
@@ -4777,314 +4467,6 @@ function NoteForm({
           <Button type="submit">특이사항 등록</Button>
         </div>
       </form>
-    </ModalShell>
-  );
-}
-
-function LegacyRoutineForm({
-  data,
-  close,
-  save,
-}: {
-  data: WorkspaceState;
-  close: () => void;
-  save: (routine: Routine) => void;
-}) {
-  function submit(event: FormSubmitEvent) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    save({
-      id: uid('routine'),
-      title: formText(form, 'title'),
-      categoryId: formText(form, 'category'),
-      assigneeId: formText(form, 'assignee'),
-      cadence: formText(form, 'cadence'),
-      checklist: formText(form, 'checklist')
-        .split('\n')
-        .map((item) => item.trim())
-        .filter(Boolean),
-      referenceUrl: formText(form, 'referenceUrl') || undefined,
-      active: true,
-      nextDate: formText(form, 'nextDate'),
-    });
-    close();
-  }
-  return (
-    <ModalShell
-      title="새 루틴"
-      description="반복 주기와 기본 체크리스트를 등록합니다."
-      close={close}
-    >
-      <form onSubmit={submit} className="space-y-4">
-        <Field label="루틴명">
-          <input name="title" required className={inputClass} />
-        </Field>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="담당자">
-            <select name="assignee" className={inputClass}>
-              {data.members
-                .filter(
-                  (member) => member.active && member.role !== 'commenter',
-                )
-                .map((member) => (
-                  <option key={member.id} value={member.id}>
-                    {member.name}
-                  </option>
-                ))}
-            </select>
-          </Field>
-          <Field label="분류">
-            <select name="category" className={inputClass}>
-              {data.categories
-                .filter((item) => item.active)
-                .map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-            </select>
-          </Field>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="반복 주기">
-            <input
-              name="cadence"
-              required
-              className={inputClass}
-              placeholder="예: 매주 월요일"
-            />
-          </Field>
-          <Field label="다음 실행일">
-            <input
-              name="nextDate"
-              type="date"
-              required
-              defaultValue={isoDate()}
-              className={inputClass}
-            />
-          </Field>
-        </div>
-        <Field label="참고 링크">
-          <input
-            name="referenceUrl"
-            type="url"
-            className={inputClass}
-            placeholder="https://"
-          />
-        </Field>
-        <Field label="체크리스트">
-          <textarea
-            name="checklist"
-            className={textAreaClass}
-            placeholder="한 줄에 하나씩 입력"
-          />
-        </Field>
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={close}>
-            취소
-          </Button>
-          <Button type="submit">루틴 등록</Button>
-        </div>
-      </form>
-    </ModalShell>
-  );
-}
-
-function LegacyInteractiveRoutineDetail({
-  routine,
-  data,
-  canEdit,
-  close,
-  toggleChecklist,
-}: {
-  routine: Routine;
-  data: WorkspaceState;
-  canEdit: boolean;
-  close: () => void;
-  toggleChecklist: (routineId: string, index: number) => void;
-}) {
-  const category = data.categories.find(
-    (item) => item.id === routine.categoryId,
-  );
-  const member = data.members.find((item) => item.id === routine.assigneeId);
-  const completed = routine.checklist.filter(
-    (_, index) => routine.checklistDone?.[index],
-  ).length;
-  return (
-    <ModalShell
-      title={routine.title}
-      description="등록된 루틴 상세 내용"
-      close={close}
-    >
-      <div className="space-y-5">
-        <div className="flex flex-wrap gap-2">
-          <span
-            className={`rounded-full px-2 py-1 text-xs font-black ${routine.active ? 'bg-[#e3eee7] text-[#2f6b4f]' : 'bg-[#ecebe6] text-[#7b847e]'}`}
-          >
-            {routine.active ? '사용 중' : '중단됨'}
-          </span>
-          <span className="rounded-full bg-[#f1f0eb] px-2 py-1 text-xs font-bold">
-            {category?.name}
-          </span>
-        </div>
-        <dl className="grid gap-3 rounded-2xl bg-[#f1f2ed] p-4 text-sm sm:grid-cols-2">
-          <div>
-            <dt className="text-xs font-bold text-[#748078]">담당자</dt>
-            <dd className="mt-1 font-black">{member?.name ?? '미배정'}</dd>
-          </div>
-          <div>
-            <dt className="text-xs font-bold text-[#748078]">반복 주기</dt>
-            <dd className="mt-1 font-black">{routine.cadence}</dd>
-          </div>
-          <div>
-            <dt className="text-xs font-bold text-[#748078]">다음 실행일</dt>
-            <dd className="mt-1 font-black">{formatDate(routine.nextDate)}</dd>
-          </div>
-          <div>
-            <dt className="text-xs font-bold text-[#748078]">캘린더 표시</dt>
-            <dd className="mt-1 font-black">
-              {routine.active ? '자동 표시' : '표시 중단'}
-            </dd>
-          </div>
-        </dl>
-        <section>
-          <h3 className="mb-2 text-sm font-black">
-            체크리스트 {completed}/{routine.checklist.length}
-          </h3>
-          {routine.checklist.length ? (
-            <ul className="space-y-2">
-              {routine.checklist.map((item, index) => {
-                const done = Boolean(routine.checklistDone?.[index]);
-                return (
-                  <li
-                    key={`${routine.id}-${index}`}
-                    className="flex items-start gap-3 rounded-xl border border-[#e0e3de] bg-white p-3 text-sm"
-                  >
-                    <input
-                      type="checkbox"
-                      aria-label={`${item} 완료`}
-                      checked={done}
-                      disabled={!canEdit}
-                      onChange={() => toggleChecklist(routine.id, index)}
-                      className="mt-0.5 size-5 shrink-0 accent-[#2f6b4f]"
-                    />
-                    <span
-                      className={`min-w-0 flex-1 ${done ? 'text-[#879089] line-through' : ''}`}
-                    >
-                      <LinkifiedText text={item} />
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          ) : (
-            <p className="text-sm text-[#748078]">
-              등록된 체크리스트가 없습니다.
-            </p>
-          )}
-        </section>
-        {routine.referenceUrl && (
-          <a
-            href={routine.referenceUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 rounded-xl border border-[#d8ded4] bg-white px-4 py-3 text-sm font-bold text-[#2f6b4f]"
-          >
-            <Link2 className="size-4" />
-            참고 링크 새 창에서 열기
-          </a>
-        )}
-      </div>
-    </ModalShell>
-  );
-}
-
-function LegacyRoutineDetail({
-  routine,
-  data,
-  close,
-}: {
-  routine: Routine;
-  data: WorkspaceState;
-  close: () => void;
-}) {
-  const category = data.categories.find(
-    (item) => item.id === routine.categoryId,
-  );
-  const member = data.members.find((item) => item.id === routine.assigneeId);
-  return (
-    <ModalShell
-      title={routine.title}
-      description="등록된 루틴 상세 내용"
-      close={close}
-    >
-      <div className="space-y-5">
-        <div className="flex flex-wrap gap-2">
-          <span
-            className={`rounded-full px-2 py-1 text-xs font-black ${routine.active ? 'bg-[#e3eee7] text-[#2f6b4f]' : 'bg-[#ecebe6] text-[#7b847e]'}`}
-          >
-            {routine.active ? '사용 중' : '중단됨'}
-          </span>
-          <span className="rounded-full bg-[#f1f0eb] px-2 py-1 text-xs font-bold">
-            {category?.name}
-          </span>
-        </div>
-        <dl className="grid gap-3 rounded-2xl bg-[#f1f2ed] p-4 text-sm sm:grid-cols-2">
-          <div>
-            <dt className="text-xs font-bold text-[#748078]">담당자</dt>
-            <dd className="mt-1 font-black">{member?.name ?? '미배정'}</dd>
-          </div>
-          <div>
-            <dt className="text-xs font-bold text-[#748078]">반복 주기</dt>
-            <dd className="mt-1 font-black">{routine.cadence}</dd>
-          </div>
-          <div>
-            <dt className="text-xs font-bold text-[#748078]">다음 실행일</dt>
-            <dd className="mt-1 font-black">{formatDate(routine.nextDate)}</dd>
-          </div>
-          <div>
-            <dt className="text-xs font-bold text-[#748078]">캘린더 표시</dt>
-            <dd className="mt-1 font-black">
-              {routine.active ? '자동 표시' : '표시 중단'}
-            </dd>
-          </div>
-        </dl>
-        <section>
-          <h3 className="mb-2 text-sm font-black">
-            체크리스트 {routine.checklist.length}
-          </h3>
-          {routine.checklist.length ? (
-            <ul className="space-y-2">
-              {routine.checklist.map((item, index) => (
-                <li
-                  key={`${routine.id}-${index}`}
-                  className="flex items-start gap-2 rounded-xl border border-[#e0e3de] bg-white p-3 text-sm"
-                >
-                  <span className="grid size-5 shrink-0 place-items-center rounded-full bg-[#e3eee7] text-[10px] font-black text-[#2f6b4f]">
-                    {index + 1}
-                  </span>
-                  {item}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-[#748078]">
-              등록된 체크리스트가 없습니다.
-            </p>
-          )}
-        </section>
-        {routine.referenceUrl && (
-          <a
-            href={routine.referenceUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-2 rounded-xl border border-[#d8ded4] bg-white px-4 py-3 text-sm font-bold text-[#2f6b4f]"
-          >
-            <Link2 className="size-4" />
-            참고 링크 열기
-          </a>
-        )}
-      </div>
     </ModalShell>
   );
 }
