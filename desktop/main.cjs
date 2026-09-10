@@ -131,6 +131,7 @@ function createWindow() {
     autoHideMenuBar: true,
     backgroundColor: '#f5f3ec',
     title: '스누피가든 업무캘린더',
+    icon: path.join(__dirname, 'icon.ico'),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

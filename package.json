@@ -26,12 +26,14 @@
     },
     "files": [
       "desktop/**/*",
+      "!desktop/icon-source.png",
       "package.json"
     ],
     "win": {
       "target": [
         "portable"
       ],
+      "icon": "desktop/icon.ico",
       "artifactName": "스누피가든-업무캘린더-${version}.${ext}"
     }
   },

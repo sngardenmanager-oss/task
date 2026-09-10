@@ -3624,15 +3624,11 @@ function AdminMasterEditPanel({
   function editCategory(category: Category) {
     const name = window.prompt('분류 이름', category.name);
     if (name === null || !name.trim()) return;
-    const color = window.prompt('표시 색상(예: #5f7f70)', category.color);
-    if (color === null || !/^#[0-9a-f]{6}$/i.test(color)) return;
     updateData(
       (current) => ({
         ...current,
         categories: current.categories.map((item) =>
-          item.id === category.id
-            ? { ...item, name: name.trim(), color }
-            : item,
+          item.id === category.id ? { ...item, name: name.trim() } : item,
         ),
       }),
       '업무 분류를 수정했습니다.',
@@ -3679,7 +3675,24 @@ function AdminMasterEditPanel({
               key={category.id}
               className="flex items-center gap-2 rounded-xl bg-[#f1f2ed] p-3"
             >
-              <CategoryDot category={category} />
+              <input
+                type="color"
+                aria-label={`${category.name} 색상 선택`}
+                value={category.color}
+                onChange={(event) => {
+                  const color = event.target.value;
+                  updateData(
+                    (current) => ({
+                      ...current,
+                      categories: current.categories.map((item) =>
+                        item.id === category.id ? { ...item, color } : item,
+                      ),
+                    }),
+                    '업무 분류 색상을 변경했습니다.',
+                  );
+                }}
+                className="size-8 shrink-0 cursor-pointer rounded-full border border-[#d8ded4] bg-transparent p-0"
+              />
               <strong className="min-w-0 flex-1 truncate text-sm">
                 {category.name}
               </strong>
