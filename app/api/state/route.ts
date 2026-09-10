@@ -4,7 +4,6 @@ import {
   authenticateRequest,
   requireWorkspaceMember,
 } from '@/lib/auth-server';
-import { listPendingRegistrations } from '@/lib/registration-requests';
 import { readWorkspaceState, writeWorkspaceState } from '@/lib/workspace-store';
 import type { Member, WorkspaceState } from '@/lib/types';
 
@@ -103,13 +102,13 @@ function validateUpdate(
 
 export async function GET(request: Request) {
   try {
-    const user = await authenticateRequest(request);
-    const state = await readWorkspaceState();
+    const [user, state] = await Promise.all([
+      authenticateRequest(request),
+      readWorkspaceState(),
+    ]);
     const actor = requireWorkspaceMember(state, user.email!);
-    const pendingRegistrations =
-      actor.role === 'admin' ? await listPendingRegistrations(state) : [];
     return Response.json(
-      { state, actor, pendingRegistrations },
+      { state, actor, pendingRegistrations: [] },
       { headers: { 'cache-control': 'private, no-store, max-age=0' } },
     );
   } catch (error) {
@@ -119,11 +118,14 @@ export async function GET(request: Request) {
 
 export async function PUT(request: Request) {
   try {
-    const user = await authenticateRequest(request);
-    const incoming = (await request.json()) as {
-      state?: WorkspaceState;
-      deletedIds?: string[];
-    };
+    const [user, incoming, before] = await Promise.all([
+      authenticateRequest(request),
+      request.json() as Promise<{
+        state?: WorkspaceState;
+        deletedIds?: string[];
+      }>,
+      readWorkspaceState(),
+    ]);
     if (!incoming.state) {
       return Response.json(
         { error: '저장할 데이터가 없습니다.' },
@@ -131,7 +133,6 @@ export async function PUT(request: Request) {
       );
     }
 
-    const before = await readWorkspaceState();
     const actor = requireWorkspaceMember(before, user.email!);
     const deletedIds = new Set(
       (incoming.deletedIds ?? []).filter(

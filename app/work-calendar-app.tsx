@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -45,7 +46,6 @@ import {
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import ExcelJS from 'exceljs';
 import type {
   Category,
   Comment,
@@ -454,6 +454,7 @@ export default function WorkCalendarApp({
   const [toast, setToast] = useState('');
   const [mobileMenu, setMobileMenu] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const pendingRegistrationsLoaded = useRef(false);
   const skipSave = useRef(true);
   const deletedIdsRef = useRef(new Set<string>());
   const dataRef = useRef(data);
@@ -707,12 +708,13 @@ export default function WorkCalendarApp({
   const isAdmin = actor.role === 'admin';
   const canEdit = actor.role !== 'commenter';
 
+  const deferredSearch = useDeferredValue(search.trim().toLowerCase());
   const visibleTasks = useMemo(
     () =>
       data.tasks.filter((task) => {
         const matchesSearch = `${task.title} ${task.description}`
           .toLowerCase()
-          .includes(search.toLowerCase());
+          .includes(deferredSearch);
         const matchesStatus =
           statusFilter === 'all' || task.status === statusFilter;
         const matchesMember =
@@ -721,22 +723,35 @@ export default function WorkCalendarApp({
           task.collaborators.includes(memberFilter);
         return matchesSearch && matchesStatus && matchesMember;
       }),
-    [data.tasks, search, statusFilter, memberFilter],
+    [data.tasks, deferredSearch, statusFilter, memberFilter],
   );
 
-  const completionRequests = data.tasks.filter(
-    (task) => task.status === 'completion_requested',
-  );
-  const overdue = data.tasks.filter(
-    (task) =>
-      (task.endDate ?? task.date) < today && task.status !== 'completed',
-  );
-  const todayTasks = data.tasks.filter(
-    (task) =>
-      task.date <= today &&
-      (task.endDate ?? task.date) >= today &&
-      task.status !== 'completed',
-  );
+  const { completionRequests, overdue, todayTasks } = useMemo(() => {
+    const nextCompletionRequests: Task[] = [];
+    const nextOverdue: Task[] = [];
+    const nextTodayTasks: Task[] = [];
+    for (const task of data.tasks) {
+      const endDate = task.endDate ?? task.date;
+      if (task.status === 'completion_requested') {
+        nextCompletionRequests.push(task);
+      }
+      if (endDate < today && task.status !== 'completed') {
+        nextOverdue.push(task);
+      }
+      if (
+        task.date <= today &&
+        endDate >= today &&
+        task.status !== 'completed'
+      ) {
+        nextTodayTasks.push(task);
+      }
+    }
+    return {
+      completionRequests: nextCompletionRequests,
+      overdue: nextOverdue,
+      todayTasks: nextTodayTasks,
+    };
+  }, [data.tasks, today]);
 
   function updateData(
     updater: (current: WorkspaceState) => WorkspaceState,
@@ -965,7 +980,7 @@ export default function WorkCalendarApp({
     }
   }
 
-  async function refreshPendingRegistrations() {
+  async function refreshPendingRegistrations(silent = false) {
     try {
       const response = await fetch('/api/auth/registrations', {
         headers: { authorization: `Bearer ${accessToken}` },
@@ -984,8 +999,10 @@ export default function WorkCalendarApp({
           result.error ?? '가입 대기 목록을 불러오지 못했습니다.',
         );
       setPendingRegistrations(result.registrations ?? []);
-      setToast('가입 대기 목록을 새로고침했습니다.');
+      pendingRegistrationsLoaded.current = true;
+      if (!silent) setToast('가입 대기 목록을 새로고침했습니다.');
     } catch (error) {
+      pendingRegistrationsLoaded.current = false;
       setToast(
         error instanceof Error
           ? error.message
@@ -1028,6 +1045,10 @@ export default function WorkCalendarApp({
   }
 
   function navigate(next: View) {
+    if (next === 'settings' && isAdmin && !pendingRegistrationsLoaded.current) {
+      pendingRegistrationsLoaded.current = true;
+      void refreshPendingRegistrations(true);
+    }
     if (viewRef.current !== next || modalRef.current) {
       viewRef.current = next;
       modalRef.current = null;
@@ -2099,118 +2120,124 @@ function CalendarView({
             laneEnds[segment.lane] = segment.end;
           }
           return (
-            <div key={weekIndex} className="relative grid grid-cols-7">
-              {week.map((day, column) => {
-                const date = day ? dateKey(day) : '';
-                const allRoutines = day
-                  ? data.routines.filter((routine) =>
-                      routineOccursOnDate(routine, date),
-                    )
-                  : [];
-                const routines = allRoutines.slice(0, 2);
-                const visibleTaskIds = new Set(
-                  segments
-                    .filter(
-                      (segment) =>
-                        segment.lane < 3 &&
-                        segment.start <= column &&
-                        segment.end >= column,
-                    )
-                    .map((segment) => segment.task.id),
-                );
-                const hiddenTaskCount = day
-                  ? tasks.filter(
-                      (task) =>
-                        task.date <= date &&
-                        (task.endDate ?? task.date) >= date &&
-                        !visibleTaskIds.has(task.id),
-                    ).length
-                  : 0;
-                const hiddenCount =
-                  hiddenTaskCount + Math.max(0, allRoutines.length - 2);
-                const isToday = date === isoDate();
-                return (
-                  <div
-                    key={column}
-                    className={`relative col-span-1 row-start-1 min-h-36 border-b border-r border-[#e5e7e2] p-1 text-left sm:min-h-40 sm:p-2 ${isToday ? 'bg-[#edf4ef]' : day ? 'hover:bg-[#f4f5f1]' : 'bg-[#f3f1eb]/60'}`}
-                  >
-                    {day && (
-                      <>
-                        <button
-                          aria-label={`${formatDate(date)} 업무 추가`}
-                          onClick={() => openCreateTask(date)}
-                          className="absolute inset-0 z-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#2f6b4f]"
-                        />
-                        <div className="pointer-events-none relative z-10">
-                          <span
-                            className={`grid size-7 place-items-center rounded-full text-xs font-bold ${isToday ? 'bg-[#2f6b4f] text-white' : column === 0 ? 'text-[#b44a42]' : column === 6 ? 'text-[#416b8f]' : 'text-[#56635b]'}`}
-                          >
-                            {day}
-                          </span>
-                          <div className="mt-[78px] space-y-1">
-                            {routines.map((routine) => {
-                              const category = data.categories.find(
-                                (item) => item.id === routine.categoryId,
-                              );
-                              return (
-                                <button
-                                  key={routine.id}
-                                  onClick={() => openRoutine(routine.id)}
-                                  className="pointer-events-auto block w-full truncate rounded-md border border-dashed border-[#2f6b4f]/40 bg-white/80 px-1 py-1 text-left text-[9px] font-black text-[#2f6b4f] sm:text-[10px]"
-                                >
-                                  <Repeat2 className="mr-1 inline size-3" />
-                                  <span
-                                    style={{
-                                      color: category?.color ?? '#2f6b4f',
-                                    }}
-                                  >
-                                    루틴
-                                  </span>{' '}
-                                  {routine.title}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                        {hiddenCount > 0 && (
-                          <button
-                            type="button"
-                            className="pointer-events-auto absolute bottom-1 left-1 right-1 z-30 rounded-md bg-white/95 px-1 py-1 text-center text-[10px] font-black text-[#2f6b4f] shadow-sm ring-1 ring-[#ccd7cf] hover:bg-[#edf4ef]"
-                            onClick={() => setExpandedDate(date)}
-                          >
-                            +{hiddenCount}개 더보기
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </div>
-                );
-              })}
-              {segments
-                .filter((segment) => segment.lane < 3)
-                .map(({ task, start, end, lane }) => {
-                  const category = data.categories.find(
-                    (item) => item.id === task.categoryId,
+            <div key={weekIndex} className="relative">
+              <div className="grid grid-cols-7">
+                {week.map((day, column) => {
+                  const date = day ? dateKey(day) : '';
+                  const allRoutines = day
+                    ? data.routines.filter((routine) =>
+                        routineOccursOnDate(routine, date),
+                      )
+                    : [];
+                  const routines = allRoutines.slice(0, 2);
+                  const visibleTaskIds = new Set(
+                    segments
+                      .filter(
+                        (segment) =>
+                          segment.lane < 3 &&
+                          segment.start <= column &&
+                          segment.end >= column,
+                      )
+                      .map((segment) => segment.task.id),
                   );
+                  const hiddenTaskCount = day
+                    ? tasks.filter(
+                        (task) =>
+                          task.date <= date &&
+                          (task.endDate ?? task.date) >= date &&
+                          !visibleTaskIds.has(task.id),
+                      ).length
+                    : 0;
+                  const hiddenCount =
+                    hiddenTaskCount + Math.max(0, allRoutines.length - 2);
+                  const isToday = date === isoDate();
                   return (
-                    <button
-                      key={`${task.id}-${weekIndex}`}
-                      onClick={() => openTask(task.id)}
-                      className="relative z-20 row-start-1 h-5 min-w-0 self-start truncate rounded-md px-2 text-left text-[9px] font-black text-white shadow-sm ring-1 ring-black/5 sm:text-[11px]"
-                      style={{
-                        gridColumn: `${start + 1} / ${end + 2}`,
-                        marginTop: `${38 + lane * 24}px`,
-                        marginLeft: start === 0 ? 0 : 2,
-                        marginRight: end === 6 ? 0 : 2,
-                        background: category?.color ?? '#9aa49d',
-                        textShadow: '0 1px 2px rgba(0, 0, 0, 0.35)',
-                      }}
+                    <div
+                      key={column}
+                      className={`relative min-h-36 border-b border-r border-[#e5e7e2] p-1 text-left sm:min-h-40 sm:p-2 ${isToday ? 'bg-[#edf4ef]' : day ? 'hover:bg-[#f4f5f1]' : 'bg-[#f3f1eb]/60'}`}
                     >
-                      {task.priority === 'urgent' ? '! ' : ''}
-                      {task.title}
-                    </button>
+                      {day && (
+                        <>
+                          <button
+                            aria-label={`${formatDate(date)} 업무 추가`}
+                            onClick={() => openCreateTask(date)}
+                            className="absolute inset-0 z-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#2f6b4f]"
+                          />
+                          <div className="pointer-events-none relative z-10">
+                            <span
+                              className={`grid size-7 place-items-center rounded-full text-xs font-bold ${isToday ? 'bg-[#2f6b4f] text-white' : column === 0 ? 'text-[#b44a42]' : column === 6 ? 'text-[#416b8f]' : 'text-[#56635b]'}`}
+                            >
+                              {day}
+                            </span>
+                            <div className="mt-[78px] space-y-1">
+                              {routines.map((routine) => {
+                                const category = data.categories.find(
+                                  (item) => item.id === routine.categoryId,
+                                );
+                                return (
+                                  <button
+                                    key={routine.id}
+                                    onClick={() => openRoutine(routine.id)}
+                                    className="pointer-events-auto block w-full truncate rounded-md border border-dashed border-[#2f6b4f]/40 bg-white/80 px-1 py-1 text-left text-[9px] font-black text-[#2f6b4f] sm:text-[10px]"
+                                  >
+                                    <Repeat2 className="mr-1 inline size-3" />
+                                    <span
+                                      style={{
+                                        color: category?.color ?? '#2f6b4f',
+                                      }}
+                                    >
+                                      루틴
+                                    </span>{' '}
+                                    {routine.title}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          {hiddenCount > 0 && (
+                            <button
+                              type="button"
+                              className="pointer-events-auto absolute bottom-1 left-1 right-1 z-30 rounded-md bg-white/95 px-1 py-1 text-center text-[10px] font-black text-[#2f6b4f] shadow-sm ring-1 ring-[#ccd7cf] hover:bg-[#edf4ef]"
+                              onClick={() => setExpandedDate(date)}
+                            >
+                              +{hiddenCount}개 더보기
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   );
                 })}
+              </div>
+              <div className="pointer-events-none absolute inset-0 grid grid-cols-7">
+                {segments
+                  .filter((segment) => segment.lane < 3)
+                  .map(({ task, start, end, lane }) => {
+                    const category = data.categories.find(
+                      (item) => item.id === task.categoryId,
+                    );
+                    return (
+                      <button
+                        key={`${task.id}-${weekIndex}`}
+                        type="button"
+                        aria-label={`${task.title}, ${formatDate(task.date)}부터 ${formatDate(task.endDate ?? task.date)}까지`}
+                        onClick={() => openTask(task.id)}
+                        className="pointer-events-auto relative z-20 row-start-1 h-5 min-w-0 self-start truncate rounded-md px-2 text-left text-[9px] font-black text-white shadow-sm ring-1 ring-black/5 sm:text-[11px]"
+                        style={{
+                          gridColumn: `${start + 1} / ${end + 2}`,
+                          marginTop: `${38 + lane * 24}px`,
+                          marginLeft: start === 0 ? 0 : 2,
+                          marginRight: end === 6 ? 0 : 2,
+                          background: category?.color ?? '#9aa49d',
+                          textShadow: '0 1px 2px rgba(0, 0, 0, 0.35)',
+                        }}
+                      >
+                        {task.priority === 'urgent' ? '! ' : ''}
+                        {task.title}
+                      </button>
+                    );
+                  })}
+              </div>
             </div>
           );
         })}
@@ -3683,6 +3710,7 @@ function DataTransferPanel({
   async function downloadTemplate() {
     setBusy(true);
     try {
+      const { default: ExcelJS } = await import('exceljs');
       const workbook = new ExcelJS.Workbook();
       const sheet = workbook.addWorksheet('업무업로드');
       sheet.columns = [
@@ -3789,6 +3817,7 @@ function DataTransferPanel({
   async function importWorkbook(file: File) {
     setBusy(true);
     try {
+      const { default: ExcelJS } = await import('exceljs');
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.load(
         new Uint8Array(await file.arrayBuffer()) as never,

@@ -1,4 +1,9 @@
-import { ApiError, apiErrorResponse, authenticateRequest, requireWorkspaceMember } from '@/lib/auth-server';
+import {
+  ApiError,
+  apiErrorResponse,
+  authenticateRequest,
+  requireWorkspaceMember,
+} from '@/lib/auth-server';
 import { listPendingRegistrations } from '@/lib/registration-requests';
 import { getSupabaseAdmin } from '@/lib/supabase-server';
 import { readWorkspaceState, writeWorkspaceState } from '@/lib/workspace-store';
@@ -7,10 +12,13 @@ import type { Member, Role } from '@/lib/types';
 export const dynamic = 'force-dynamic';
 
 async function requireAdmin(request: Request) {
-  const user = await authenticateRequest(request);
-  const state = await readWorkspaceState();
+  const [user, state] = await Promise.all([
+    authenticateRequest(request),
+    readWorkspaceState(),
+  ]);
   const actor = requireWorkspaceMember(state, user.email!);
-  if (actor.role !== 'admin') throw new ApiError('가입 승인은 관리자만 처리할 수 있습니다.', 403);
+  if (actor.role !== 'admin')
+    throw new ApiError('가입 승인은 관리자만 처리할 수 있습니다.', 403);
   return { state };
 }
 
@@ -30,7 +38,11 @@ export async function GET(request: Request) {
 export async function PATCH(request: Request) {
   try {
     const { state } = await requireAdmin(request);
-    const body = (await request.json()) as { id?: string; role?: Role; team?: string };
+    const body = (await request.json()) as {
+      id?: string;
+      role?: Role;
+      team?: string;
+    };
     const id = body.id?.trim();
     const team = body.team?.trim();
     const role = body.role;
@@ -41,7 +53,8 @@ export async function PATCH(request: Request) {
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase.auth.admin.getUserById(id);
     const authUser = data.user;
-    if (error || !authUser?.email) throw new ApiError('가입 신청 계정을 찾지 못했습니다.', 404);
+    if (error || !authUser?.email)
+      throw new ApiError('가입 신청 계정을 찾지 못했습니다.', 404);
 
     const email = authUser.email.trim().toLowerCase();
     if (state.members.some((member) => member.email.toLowerCase() === email)) {
@@ -49,9 +62,10 @@ export async function PATCH(request: Request) {
     }
 
     const displayName = authUser.user_metadata?.display_name;
-    const name = typeof displayName === 'string' && displayName.trim()
-      ? displayName.trim()
-      : email.split('@')[0];
+    const name =
+      typeof displayName === 'string' && displayName.trim()
+        ? displayName.trim()
+        : email.split('@')[0];
     const member: Member = {
       id: `member-${authUser.id}`,
       name,
@@ -62,8 +76,14 @@ export async function PATCH(request: Request) {
     };
 
     if (!authUser.email_confirmed_at) {
-      const { error: confirmError } = await supabase.auth.admin.updateUserById(id, { email_confirm: true });
-      if (confirmError) throw new Error(`Supabase email confirmation failed: ${confirmError.message}`);
+      const { error: confirmError } = await supabase.auth.admin.updateUserById(
+        id,
+        { email_confirm: true },
+      );
+      if (confirmError)
+        throw new Error(
+          `Supabase email confirmation failed: ${confirmError.message}`,
+        );
     }
 
     state.members.push(member);
