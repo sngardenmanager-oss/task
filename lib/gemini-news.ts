@@ -7,7 +7,7 @@ type RawNewsFile = {
   modifiedAt: string;
 };
 
-const GEMINI_MODEL = 'gemini-flash-latest';
+const GEMINI_MODEL = 'gemini-3.6-flash';
 const MAX_SOURCE_FILES = 60;
 const MAX_CONTENT_CHARS_PER_FILE = 4000;
 
