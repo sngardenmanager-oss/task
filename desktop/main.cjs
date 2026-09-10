@@ -32,6 +32,26 @@ function newsSyncPath() {
   return path.join(app.getPath('userData'), 'news-sync.json');
 }
 
+function readNewsSync() {
+  try {
+    if (!fs.existsSync(newsSyncPath()))
+      return { lastSyncedDate: '', fileHashes: {} };
+    const sync = JSON.parse(fs.readFileSync(newsSyncPath(), 'utf8'));
+    return {
+      lastSyncedDate:
+        typeof sync.lastSyncedDate === 'string' ? sync.lastSyncedDate : '',
+      fileHashes:
+        sync.fileHashes && typeof sync.fileHashes === 'object'
+          ? sync.fileHashes
+          : {},
+    };
+  } catch {
+    return { lastSyncedDate: '', fileHashes: {} };
+  }
+}
+
+const NEWS_LOOKBACK_MS = 3 * 24 * 60 * 60 * 1000;
+
 async function listNewsFiles(directory, depth = 0) {
   if (depth > 4 || !fs.existsSync(directory)) return [];
   const allowed = new Set(['.md', '.txt', '.json', '.csv', '.html']);
@@ -59,44 +79,81 @@ async function listNewsFiles(directory, depth = 0) {
   return groups.flat();
 }
 
-async function readNewsFiles(directory) {
-  const files = (await listNewsFiles(directory))
+// 최근 3일 이내에 수정된 파일만 대상으로 삼는다. 이전 동기화 이후 내용이 바뀐
+// 파일이 하나도 없으면 hasChanges=false를 돌려줘서, 호출부가 Gemini 요약을
+// 다시 돌리지 않고 이전 요약 결과를 그대로 유지하게 한다(요약 낭비 방지).
+// 변경이 있을 때는 3일 이내 전체 목록을 돌려줘서, 3일이 지나 빠진 기사가
+// 요약 대상에서 자연스럽게 제외되도록 한다.
+async function readNewsFiles(directory, previousHashes) {
+  const cutoff = Date.now() - NEWS_LOOKBACK_MS;
+  const recentFiles = (await listNewsFiles(directory))
+    .filter((file) => file.mtimeMs >= cutoff)
     .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt))
     .slice(0, 200);
-  return Promise.all(
-    files.map(async ({ fullPath, modifiedAt, mtimeMs }) => ({
+
+  const fileHashes = {};
+  const files = [];
+  let hasChanges = false;
+  for (const { fullPath, modifiedAt } of recentFiles) {
+    const relativePath = path.relative(newsFolder, fullPath);
+    const content = (await fs.promises.readFile(fullPath, 'utf8')).slice(
+      0,
+      30000,
+    );
+    const contentHash = crypto.createHash('sha1').update(content).digest('hex');
+    fileHashes[relativePath] = contentHash;
+    if (previousHashes[relativePath] !== contentHash) hasChanges = true;
+    files.push({
       id: crypto
         .createHash('sha1')
-        .update(`${fullPath}:${mtimeMs}`)
+        .update(`${relativePath}:${contentHash}`)
         .digest('hex'),
-      name: path.relative(newsFolder, fullPath),
-      content: (await fs.promises.readFile(fullPath, 'utf8')).slice(0, 30000),
+      name: relativePath,
+      content,
       modifiedAt,
-    })),
-  );
+    });
+  }
+  return { files, fileHashes, hasChanges };
 }
 
 ipcMain.handle('news:collect-once-daily', async () => {
   const date = koreaDate();
   try {
-    const sync = fs.existsSync(newsSyncPath())
-      ? JSON.parse(fs.readFileSync(newsSyncPath(), 'utf8'))
-      : {};
-    if (sync.lastSyncedDate === date) return { skipped: true, date, files: [] };
-    const files = await readNewsFiles(newsFolder);
-    return { skipped: false, date, files };
+    const sync = readNewsSync();
+    if (sync.lastSyncedDate === date) {
+      return { skipped: true, date, files: [], fileHashes: sync.fileHashes };
+    }
+    const { files, fileHashes, hasChanges } = await readNewsFiles(
+      newsFolder,
+      sync.fileHashes,
+    );
+    return { skipped: false, date, files: hasChanges ? files : [], fileHashes };
   } catch (error) {
-    return { skipped: false, date, files: [], error: String(error) };
+    return {
+      skipped: false,
+      date,
+      files: [],
+      fileHashes: {},
+      error: String(error),
+    };
   }
 });
 
-ipcMain.handle('news:mark-synced', (_event, date) => {
+ipcMain.handle('news:mark-synced', (_event, payload) => {
+  const date = payload && typeof payload === 'object' ? payload.date : payload;
   const safeDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date))
     ? String(date)
     : koreaDate();
+  const fileHashes =
+    payload &&
+    typeof payload === 'object' &&
+    payload.fileHashes &&
+    typeof payload.fileHashes === 'object'
+      ? payload.fileHashes
+      : {};
   fs.writeFileSync(
     newsSyncPath(),
-    JSON.stringify({ lastSyncedDate: safeDate }, null, 2),
+    JSON.stringify({ lastSyncedDate: safeDate, fileHashes }, null, 2),
     'utf8',
   );
   return { ok: true };

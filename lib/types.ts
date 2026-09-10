@@ -109,7 +109,6 @@ export type WorkspaceState = {
   tasks: Task[];
   routines: Routine[];
   notes: SpecialNote[];
-  news: NewsItem[];
   deletedIds?: string[];
 };
 
@@ -125,9 +124,13 @@ declare global {
           content: string;
           modifiedAt: string;
         }[];
+        fileHashes: Record<string, string>;
         error?: string;
       }>;
-      markNewsSynced: (date: string) => Promise<{ ok: boolean }>;
+      markNewsSynced: (payload: {
+        date: string;
+        fileHashes: Record<string, string>;
+      }) => Promise<{ ok: boolean }>;
     };
   }
 

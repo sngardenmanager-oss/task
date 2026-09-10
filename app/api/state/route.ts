@@ -47,7 +47,6 @@ function mergeIncomingState(
     tasks: mergeById(before.tasks, incoming.tasks, deletedIds),
     routines: mergeById(before.routines, incoming.routines, deletedIds),
     notes: mergeById(before.notes, incoming.notes, deletedIds),
-    news: mergeById(before.news, incoming.news, deletedIds),
     deletedIds: [...deletedIds],
   };
 }

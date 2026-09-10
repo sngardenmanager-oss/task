@@ -252,34 +252,6 @@ function routineChecklistWithLinks(routine: Routine) {
   return result;
 }
 
-function newsItemFromDesktop(file: {
-  id: string;
-  name: string;
-  content: string;
-  modifiedAt: string;
-}): NewsItem {
-  const normalized = file.content
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const heading = file.content.match(/^#\s+(.+)$/m)?.[1]?.trim();
-  const title =
-    heading || file.name.replace(/\.[^.]+$/, '').replaceAll('_', ' ');
-  const url = file.content.match(/https?:\/\/[^\s)\]}>"']+/i)?.[0];
-  return {
-    id: `desktop-news-${file.id}`,
-    title,
-    summary:
-      normalized
-        .replace(/^#\s+[^\n]+/, '')
-        .trim()
-        .slice(0, 320) || '요약할 내용이 없습니다.',
-    source: file.name,
-    collectedAt: isoDate(),
-    url,
-  };
-}
-
 function mergeWorkspaceStates(
   preferred: WorkspaceState,
   fallback: WorkspaceState,
@@ -302,7 +274,6 @@ function mergeWorkspaceStates(
     tasks: mergeById(preferred.tasks, fallback.tasks),
     routines: mergeById(preferred.routines, fallback.routines),
     notes: mergeById(preferred.notes, fallback.notes),
-    news: mergeById(preferred.news, fallback.news),
     deletedIds: [...deletedIds],
   };
 }
@@ -438,6 +409,7 @@ export default function WorkCalendarApp({
   const [pendingRegistrations, setPendingRegistrations] = useState<
     RegistrationRequest[]
   >(initialPendingRegistrations);
+  const [newsItems, setNewsItems] = useState<NewsItem[]>([]);
   const [view, setView] = useState<View>('today');
   const [modal, setModal] = useState<Modal>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -635,6 +607,34 @@ export default function WorkCalendarApp({
   }, [toast]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch('/api/news', {
+          headers: { authorization: `Bearer ${accessToken}` },
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        const result = (await response.json()) as {
+          items?: NewsItem[];
+          error?: string;
+        };
+        if (response.status === 401) {
+          await onSignOut();
+          return;
+        }
+        if (!response.ok)
+          throw new Error(result.error ?? '관광뉴스를 불러오지 못했습니다.');
+        setNewsItems(result.items ?? []);
+      } catch {
+        if (controller.signal.aborted) return;
+        // 관광뉴스는 부가 기능이라 실패해도 조용히 넘어간다.
+      }
+    })();
+    return () => controller.abort();
+  }, [accessToken, onSignOut]);
+
+  useEffect(() => {
     if (
       actor.role !== 'admin' ||
       !window.snoopyDesktop ||
@@ -649,23 +649,24 @@ export default function WorkCalendarApp({
         setToast('관광뉴스 폴더를 읽지 못했습니다. 폴더 경로를 확인해 주세요.');
         return;
       }
-      const imported = result.files.map(newsItemFromDesktop);
-      const knownIds = new Set(dataRef.current.news.map((item) => item.id));
-      const newItems = imported.filter((item) => !knownIds.has(item.id));
-      const nextState = newItems.length
-        ? { ...dataRef.current, news: [...newItems, ...dataRef.current.news] }
-        : dataRef.current;
-      const response = await fetch('/api/state', {
-        method: 'PUT',
+      if (result.files.length === 0) {
+        await window.snoopyDesktop!.markNewsSynced({
+          date: result.date,
+          fileHashes: result.fileHashes,
+        });
+        return;
+      }
+      const response = await fetch('/api/news/digest', {
+        method: 'POST',
         headers: {
           'content-type': 'application/json',
           authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ state: nextState }),
+        body: JSON.stringify({ files: result.files }),
       });
-      const saveResult = (await response.json()) as {
+      const digestResult = (await response.json()) as {
         error?: string;
-        state?: WorkspaceState;
+        items?: NewsItem[];
       };
       if (response.status === 401) {
         await onSignOut();
@@ -673,26 +674,19 @@ export default function WorkCalendarApp({
       }
       if (!response.ok) {
         setToast(
-          saveResult.error ??
-            '관광뉴스를 공용 일정에 저장하지 못했습니다. 다음 실행 때 다시 시도합니다.',
+          digestResult.error ??
+            '최근 3일 관광뉴스를 정리하지 못했습니다. 다음 실행 때 다시 시도합니다.',
         );
         return;
       }
-      if (saveResult.state) {
-        window.localStorage.setItem(
-          `snoopy-work-calendar-offline:${actor.email.toLowerCase()}`,
-          JSON.stringify(saveResult.state),
-        );
-        skipSave.current = true;
-        setData(saveResult.state);
-      } else if (newItems.length) {
-        setData(nextState);
-      }
-      await window.snoopyDesktop!.markNewsSynced(result.date);
-      if (newItems.length)
-        setToast(
-          `관광뉴스 ${newItems.length}건을 오늘의 공용 뉴스로 반영했습니다.`,
-        );
+      setNewsItems(digestResult.items ?? []);
+      await window.snoopyDesktop!.markNewsSynced({
+        date: result.date,
+        fileHashes: result.fileHashes,
+      });
+      setToast(
+        `최근 3일 관광뉴스 ${result.files.length}건을 정리해 공용 관광뉴스로 반영했습니다.`,
+      );
     })().catch(() =>
       setToast(
         '관광뉴스 자동 동기화를 완료하지 못했습니다. 다음 실행 때 다시 시도합니다.',
@@ -1011,6 +1005,139 @@ export default function WorkCalendarApp({
     }
   }
 
+  async function importNewsFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const imported: NewsItem[] = [];
+    for (const file of Array.from(files)) {
+      const text = await file.text();
+      const title =
+        text.match(/^#\s+(.+)$/m)?.[1] ?? file.name.replace(/\.md$/i, '');
+      const url = text.match(/https?:\/\/\S+/)?.[0];
+      imported.push({
+        id: uid('news'),
+        title,
+        summary:
+          text
+            .replace(/^#.*$/m, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 320) || '내용 없음',
+        source: file.name,
+        collectedAt: isoDate(),
+        url,
+      });
+    }
+    try {
+      const response = await fetch('/api/news', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ items: imported }),
+      });
+      const result = (await response.json()) as {
+        items?: NewsItem[];
+        error?: string;
+      };
+      if (response.status === 401) {
+        await onSignOut();
+        return;
+      }
+      if (!response.ok)
+        throw new Error(result.error ?? '관광뉴스를 저장하지 못했습니다.');
+      setNewsItems(result.items ?? []);
+      setToast(`${imported.length}개의 관광뉴스 문서를 가져왔습니다.`);
+    } catch (error) {
+      setToast(
+        error instanceof Error
+          ? error.message
+          : '관광뉴스를 저장하지 못했습니다.',
+      );
+    }
+  }
+
+  async function editNewsItem(item: NewsItem) {
+    const title = window.prompt('뉴스 제목', item.title);
+    if (title === null || !title.trim()) return;
+    const summary = window.prompt('뉴스 요약', item.summary);
+    if (summary === null || !summary.trim()) return;
+    const source = window.prompt('출처', item.source);
+    if (source === null || !source.trim()) return;
+    const collectedAt = window.prompt('등록일(YYYY-MM-DD)', item.collectedAt);
+    if (collectedAt === null || !/^\d{4}-\d{2}-\d{2}$/.test(collectedAt))
+      return;
+    const url = window.prompt('원문 URL(없으면 비워두기)', item.url ?? '');
+    if (url === null) return;
+    const nextItem: NewsItem = {
+      ...item,
+      title: title.trim(),
+      summary: summary.trim(),
+      source: source.trim(),
+      collectedAt,
+      url: normalizeUrl(url) || undefined,
+    };
+    try {
+      const response = await fetch('/api/news', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ item: nextItem }),
+      });
+      const result = (await response.json()) as {
+        items?: NewsItem[];
+        error?: string;
+      };
+      if (response.status === 401) {
+        await onSignOut();
+        return;
+      }
+      if (!response.ok)
+        throw new Error(result.error ?? '관광뉴스를 수정하지 못했습니다.');
+      setNewsItems(result.items ?? []);
+      setToast('관광뉴스를 수정했습니다.');
+    } catch (error) {
+      setToast(
+        error instanceof Error
+          ? error.message
+          : '관광뉴스를 수정하지 못했습니다.',
+      );
+    }
+  }
+
+  async function deleteNewsItem(item: NewsItem) {
+    if (!window.confirm('이 관광뉴스를 삭제할까요?')) return;
+    try {
+      const response = await fetch(
+        `/api/news?id=${encodeURIComponent(item.id)}`,
+        {
+          method: 'DELETE',
+          headers: { authorization: `Bearer ${accessToken}` },
+        },
+      );
+      const result = (await response.json()) as {
+        items?: NewsItem[];
+        error?: string;
+      };
+      if (response.status === 401) {
+        await onSignOut();
+        return;
+      }
+      if (!response.ok)
+        throw new Error(result.error ?? '관광뉴스를 삭제하지 못했습니다.');
+      setNewsItems(result.items ?? []);
+      setToast('관광뉴스를 삭제했습니다.');
+    } catch (error) {
+      setToast(
+        error instanceof Error
+          ? error.message
+          : '관광뉴스를 삭제하지 못했습니다.',
+      );
+    }
+  }
+
   async function approveRegistration(
     id: string,
     role: Exclude<Role, 'admin'>,
@@ -1290,6 +1417,7 @@ export default function WorkCalendarApp({
           {view === 'today' && (
             <TodayView
               data={data}
+              news={newsItems}
               actor={actor}
               todayTasks={todayTasks}
               requests={completionRequests}
@@ -1349,10 +1477,11 @@ export default function WorkCalendarApp({
           {view === 'team' && <TeamView data={data} openTask={openTask} />}
           {view === 'news' && (
             <NewsView
-              data={data}
+              news={newsItems}
               isAdmin={isAdmin}
-              updateData={updateData}
-              markDeleted={(id) => deletedIdsRef.current.add(id)}
+              onImport={importNewsFiles}
+              onEdit={editNewsItem}
+              onDelete={deleteNewsItem}
             />
           )}
           {view === 'settings' && (
@@ -1711,6 +1840,7 @@ function TaskCard({
 
 function TodayView({
   data,
+  news,
   actor,
   todayTasks,
   requests,
@@ -1722,6 +1852,7 @@ function TodayView({
   openCreateTask,
 }: {
   data: WorkspaceState;
+  news: NewsItem[];
   actor: Member;
   todayTasks: Task[];
   requests: Task[];
@@ -1753,7 +1884,7 @@ function TodayView({
         priorityOrder[a.priority] - priorityOrder[b.priority] ||
         (a.endDate ?? a.date).localeCompare(b.endDate ?? b.date),
     );
-  const recentNews = [...data.news]
+  const recentNews = [...news]
     .sort((a, b) => b.collectedAt.localeCompare(a.collectedAt))
     .slice(0, 3);
   return (
@@ -3013,90 +3144,20 @@ function rankTourismNews(items: NewsItem[]) {
 }
 
 function NewsView({
-  data,
+  news,
   isAdmin,
-  updateData,
-  markDeleted,
+  onImport,
+  onEdit,
+  onDelete,
 }: {
-  data: WorkspaceState;
+  news: NewsItem[];
   isAdmin: boolean;
-  updateData: (
-    fn: (data: WorkspaceState) => WorkspaceState,
-    message?: string,
-  ) => void;
-  markDeleted: (id: string) => void;
+  onImport: (files: FileList | null) => void;
+  onEdit: (item: NewsItem) => void;
+  onDelete: (item: NewsItem) => void;
 }) {
-  async function importFiles(files: FileList | null) {
-    if (!files) return;
-    const imported: NewsItem[] = [];
-    for (const file of Array.from(files)) {
-      const text = await file.text();
-      const title =
-        text.match(/^#\s+(.+)$/m)?.[1] ?? file.name.replace(/\.md$/i, '');
-      const url = text.match(/https?:\/\/\S+/)?.[0];
-      imported.push({
-        id: uid('news'),
-        title,
-        summary:
-          text
-            .replace(/^#.*$/m, '')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .slice(0, 320) || '내용 없음',
-        source: file.name,
-        collectedAt: isoDate(),
-        url,
-      });
-    }
-    updateData(
-      (current) => ({ ...current, news: [...imported, ...current.news] }),
-      `${imported.length}개의 관광뉴스 문서를 가져왔습니다.`,
-    );
-  }
-  function editNews(item: NewsItem) {
-    const title = window.prompt('뉴스 제목', item.title);
-    if (title === null || !title.trim()) return;
-    const summary = window.prompt('뉴스 요약', item.summary);
-    if (summary === null || !summary.trim()) return;
-    const source = window.prompt('출처', item.source);
-    if (source === null || !source.trim()) return;
-    const collectedAt = window.prompt('등록일(YYYY-MM-DD)', item.collectedAt);
-    if (collectedAt === null || !/^\d{4}-\d{2}-\d{2}$/.test(collectedAt))
-      return;
-    const url = window.prompt('원문 URL(없으면 비워두기)', item.url ?? '');
-    if (url === null) return;
-    updateData(
-      (current) => ({
-        ...current,
-        news: current.news.map((news) =>
-          news.id === item.id
-            ? {
-                ...news,
-                title: title.trim(),
-                summary: summary.trim(),
-                source: source.trim(),
-                collectedAt,
-                url: normalizeUrl(url) || undefined,
-              }
-            : news,
-        ),
-      }),
-      '관광뉴스를 수정했습니다.',
-    );
-  }
-  function deleteNews(item: NewsItem) {
-    if (!window.confirm('이 관광뉴스를 삭제할까요?')) return;
-    markDeleted(item.id);
-    updateData(
-      (current) => ({
-        ...current,
-        news: current.news.filter((news) => news.id !== item.id),
-      }),
-      '관광뉴스를 삭제했습니다.',
-    );
-  }
   const recent = rankTourismNews(
-    data.news.filter((item) => dayDifference(item.collectedAt, isoDate()) <= 3),
+    news.filter((item) => dayDifference(item.collectedAt, isoDate()) <= 3),
   ).slice(0, 30);
   const keywordCounts = new Map<string, number>();
   recent.forEach((item) =>
@@ -3137,7 +3198,7 @@ function NewsView({
               accept=".md,.txt,text/markdown,text/plain"
               multiple
               className="sr-only"
-              onChange={(event) => void importFiles(event.target.files)}
+              onChange={(event) => onImport(event.target.files)}
             />
           </label>
         )}
@@ -3175,13 +3236,13 @@ function NewsView({
                   {isAdmin && (
                     <>
                       <button
-                        onClick={() => editNews(item)}
+                        onClick={() => onEdit(item)}
                         className="font-bold text-[#2f6b4f]"
                       >
                         수정
                       </button>
                       <button
-                        onClick={() => deleteNews(item)}
+                        onClick={() => onDelete(item)}
                         className="font-bold text-[#a83f36]"
                       >
                         삭제
