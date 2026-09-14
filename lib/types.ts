@@ -52,6 +52,8 @@ export type Task = {
   endDate?: string;
   /** HH:mm, 24시간제. 비어 있으면 종일 업무입니다. */
   time?: string;
+  /** HH:mm, 24시간제. time이 있을 때만 의미가 있습니다. */
+  endTime?: string;
   categoryId: string;
   assigneeId: string;
   collaborators: string[];

@@ -188,13 +188,32 @@ function taskTimeSlot(time?: string) {
   return time < '12:00' ? 1 : 2;
 }
 
-function formatTaskTime(time?: string) {
-  if (!time) return '종일';
-  const [hourText, minuteText] = time.split(':');
+function formatClockTime(value: string) {
+  const [hourText, minuteText] = value.split(':');
   const hour = Number(hourText);
   const period = hour < 12 ? '오전' : '오후';
   const displayHour = hour % 12 === 0 ? 12 : hour % 12;
   return `${period} ${displayHour}:${minuteText}`;
+}
+
+/** 시작 시간만 있으면 단일 시각을, 종료 시간까지 있으면 "몇시 - 몇시" 범위를 표시합니다. */
+function formatTaskTime(time?: string, endTime?: string) {
+  if (!time) return '종일';
+  const start = formatClockTime(time);
+  return endTime ? `${start} - ${formatClockTime(endTime)}` : start;
+}
+
+function timeToMinutes(value: string) {
+  const [hourText, minuteText] = value.split(':');
+  return Number(hourText) * 60 + Number(minuteText);
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function isTaskOverdue(task: Task) {
+  return task.status !== 'completed' && (task.endDate ?? task.date) < isoDate();
 }
 
 /** 날짜 오름차순, 같은 날짜면 종일 → 오전 → 오후, 같은 시간대면 시각 오름차순으로 정렬합니다. */
@@ -242,6 +261,89 @@ function routineOccursOnDate(routine: Routine, date: string) {
   if (/매월|월간|월 1회/.test(routine.cadence))
     return Number(date.slice(8, 10)) === Number(routine.nextDate.slice(8, 10));
   return date === routine.nextDate;
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function startOfWeek(date: Date) {
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  start.setDate(start.getDate() - start.getDay());
+  return start;
+}
+
+function dateKeyOf(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+/** 일주일치 날짜 배열(빈 칸은 '')을 기준으로 종일/여러 날 업무를 겹치지 않는 레인에 배치합니다. */
+function computeWeekSegments(tasks: Task[], weekDateKeys: string[]) {
+  const segments = tasks
+    .flatMap((task) => {
+      const occupied = weekDateKeys
+        .map((date, column) =>
+          date &&
+          task.date <= date &&
+          (task.endDate ?? task.date) >= date
+            ? column
+            : -1,
+        )
+        .filter((column) => column >= 0);
+      return occupied.length
+        ? [
+            {
+              task,
+              start: occupied[0],
+              end: occupied[occupied.length - 1],
+              lane: 0,
+            },
+          ]
+        : [];
+    })
+    .sort((a, b) => a.start - b.start || b.end - b.start - (a.end - a.start));
+  const laneEnds: number[] = [];
+  for (const segment of segments) {
+    const openLane = laneEnds.findIndex((end) => end < segment.start);
+    segment.lane = openLane < 0 ? laneEnds.length : openLane;
+    laneEnds[segment.lane] = segment.end;
+  }
+  return segments;
+}
+
+type TimedBlock = { task: Task; startMin: number; endMin: number };
+
+/** 시간이 겹치는 업무들을 클러스터별로 묶어 나란히 표시할 레인을 계산합니다. */
+function layoutTimedBlocks(blocks: TimedBlock[]) {
+  const sorted = [...blocks].sort(
+    (a, b) => a.startMin - b.startMin || a.endMin - b.endMin,
+  );
+  const results: (TimedBlock & { lane: number; laneCount: number })[] = [];
+  let cluster: (TimedBlock & { lane: number })[] = [];
+  let clusterEnd = -Infinity;
+  const laneEnds: number[] = [];
+  const flushCluster = () => {
+    if (!cluster.length) return;
+    const laneCount = Math.max(...cluster.map((item) => item.lane)) + 1;
+    for (const item of cluster) results.push({ ...item, laneCount });
+    cluster = [];
+    laneEnds.length = 0;
+  };
+  for (const block of sorted) {
+    if (block.startMin >= clusterEnd) {
+      flushCluster();
+      clusterEnd = -Infinity;
+    }
+    const openLane = laneEnds.findIndex((end) => end <= block.startMin);
+    const lane = openLane < 0 ? laneEnds.length : openLane;
+    laneEnds[lane] = block.endMin;
+    clusterEnd = Math.max(clusterEnd, block.endMin);
+    cluster.push({ ...block, lane });
+  }
+  flushCluster();
+  return results;
 }
 
 function assigneeNames(task: Task, data: WorkspaceState) {
@@ -1530,6 +1632,7 @@ export default function WorkCalendarApp({
               ddayTasks={ddayTasks}
               isAdmin={isAdmin}
               openTask={openTask}
+              openRoutine={openRoutine}
               setTaskStatus={setTaskStatus}
               navigate={navigate}
               focusTaskList={focusTaskList}
@@ -1898,6 +2001,23 @@ function LinkifiedText({ text }: { text: string }) {
   );
 }
 
+/** 긴급 업무는 "‼ [긴급]" 파란 표시를, 지연 업무(완료 제외)는 빨간 글씨를 덧붙입니다. */
+function TaskTitleText({ task }: { task: Task }) {
+  const isUrgent = task.status !== 'completed' && task.priority === 'urgent';
+  const overdueFlag = isTaskOverdue(task);
+  const colorClass = isUrgent
+    ? 'text-[#1d4ed8]'
+    : overdueFlag
+      ? 'text-[#c0392b]'
+      : '';
+  return (
+    <span className={colorClass}>
+      {isUrgent && <span className="font-black">‼ [긴급] </span>}
+      {task.title}
+    </span>
+  );
+}
+
 function TaskCard({
   task,
   data,
@@ -1929,16 +2049,11 @@ function TaskCard({
           <strong
             className={`truncate text-sm ${task.status === 'completed' ? 'text-[#879089] line-through' : ''}`}
           >
-            {task.title}
+            <TaskTitleText task={task} />
           </strong>
-          {task.priority === 'urgent' && (
-            <span className="rounded-full bg-[#fae0dc] px-1.5 py-0.5 text-[9px] font-black text-[#9b453c]">
-              긴급
-            </span>
-          )}
         </span>
         <span className="mt-1 block truncate text-xs text-[#5f6d64]">
-          {formatDate(task.date)} · {formatTaskTime(task.time)} ·{' '}
+          {formatDate(task.date)} · {formatTaskTime(task.time, task.endTime)} ·{' '}
           {names.length ? names.join(', ') : '미배정'} ·{' '}
           {statusLabel[task.status]}
         </span>
@@ -1958,6 +2073,7 @@ function TodayView({
   ddayTasks,
   isAdmin,
   openTask,
+  openRoutine,
   setTaskStatus,
   navigate,
   focusTaskList,
@@ -1972,6 +2088,7 @@ function TodayView({
   ddayTasks: Task[];
   isAdmin: boolean;
   openTask: (id: string) => void;
+  openRoutine: (id: string) => void;
   setTaskStatus: (id: string, status: Task['status']) => void;
   navigate: (view: View) => void;
   focusTaskList: (focus: 'today' | 'overdue' | 'dday') => void;
@@ -1982,6 +2099,7 @@ function TodayView({
   const previousNotes = data.notes.filter(
     (item) => item.date === previousDate && !item.completed,
   );
+  const widgetTasks = data.tasks.filter((task) => isTaskVisibleTo(task, actor));
   const sortedDdayTasks = [...ddayTasks].sort(
     (a, b) =>
       Number(a.status === 'completed') - Number(b.status === 'completed') ||
@@ -2122,12 +2240,12 @@ function TodayView({
                       <strong
                         className={`block truncate text-sm ${task.status === 'completed' ? 'line-through' : ''}`}
                       >
-                        {task.title}
+                        <TaskTitleText task={task} />
                       </strong>
                       <span className="mt-1 block text-xs text-[#748078]">
                         {priorityLabel[task.priority]} ·{' '}
                         {formatDate(task.endDate ?? task.date)} ·{' '}
-                        {formatTaskTime(task.time)} ·{' '}
+                        {formatTaskTime(task.time, task.endTime)} ·{' '}
                         {dday(task.endDate ?? task.date)}
                       </span>
                     </button>
@@ -2250,7 +2368,130 @@ function TodayView({
           <Empty title="최근 3일 이내 등록된 관광뉴스가 없습니다." />
         )}
       </section>
+      <div className="hidden lg:block">
+        <TodayCalendarWidget
+          data={data}
+          tasks={widgetTasks}
+          openTask={openTask}
+          openRoutine={openRoutine}
+        />
+      </div>
     </div>
+  );
+}
+
+/** 컴퓨터 화면 전용 달력 위젯입니다. 날짜를 누르면 해당 날짜의 전체 일정을 모달로 보여줍니다. */
+function TodayCalendarWidget({
+  data,
+  tasks,
+  openTask,
+  openRoutine,
+}: {
+  data: WorkspaceState;
+  tasks: Task[];
+  openTask: (id: string) => void;
+  openRoutine: (id: string) => void;
+}) {
+  const [cursor, setCursor] = useState(() => new Date());
+  const [expandedDate, setExpandedDate] = useState<string | null>(null);
+  const year = cursor.getFullYear();
+  const monthIndex = cursor.getMonth();
+  const days = new Date(year, monthIndex + 1, 0).getDate();
+  const offset = new Date(year, monthIndex, 1).getDay();
+  const cells = Array.from({ length: 42 }, (_, index) => {
+    const day = index - offset + 1;
+    return day > 0 && day <= days ? day : null;
+  });
+  const dateKey = (day: number) =>
+    `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  return (
+    <section className="overflow-hidden rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] shadow-[0_12px_36px_rgba(55,74,62,0.06)]">
+      <div className="flex items-center justify-between border-b border-[#e0e4de] px-5 py-4">
+        <h3 className="font-black">달력 위젯</h3>
+        <div className="flex items-center gap-1">
+          <Button
+            aria-label="이전 달"
+            variant="ghost"
+            size="icon"
+            onClick={() => setCursor(new Date(year, monthIndex - 1, 1))}
+          >
+            <ChevronLeft />
+          </Button>
+          <span className="min-w-20 text-center text-sm font-bold">
+            {year}년 {monthIndex + 1}월
+          </span>
+          <Button
+            aria-label="다음 달"
+            variant="ghost"
+            size="icon"
+            onClick={() => setCursor(new Date(year, monthIndex + 1, 1))}
+          >
+            <ChevronRight />
+          </Button>
+        </div>
+      </div>
+      <div className="grid grid-cols-7 border-b border-[#e0e4de] bg-[#f1f2ed]">
+        {['일', '월', '화', '수', '목', '금', '토'].map((day, index) => (
+          <div
+            key={day}
+            className={`py-1.5 text-center text-[11px] font-bold ${index === 0 ? 'text-[#b44a42]' : index === 6 ? 'text-[#416b8f]' : 'text-[#5f6d64]'}`}
+          >
+            {day}
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7">
+        {cells.map((day, index) => {
+          const date = day ? dateKey(day) : '';
+          const dayTasks = day
+            ? tasks.filter(
+                (task) =>
+                  task.date <= date && (task.endDate ?? task.date) >= date,
+              )
+            : [];
+          const dayNotes = day
+            ? data.notes.filter((note) => note.date === date)
+            : [];
+          const isToday = date === isoDate();
+          return (
+            <button
+              key={index}
+              type="button"
+              disabled={!day}
+              onClick={() => day && setExpandedDate(date)}
+              className={`flex min-h-16 flex-col items-center gap-1 border-b border-r border-[#e5e7e2] p-1.5 text-left disabled:cursor-default ${isToday ? 'bg-[#edf4ef]' : day ? 'hover:bg-[#f4f5f1]' : 'bg-[#f3f1eb]/60'}`}
+            >
+              {day && (
+                <>
+                  <span
+                    className={`grid size-6 place-items-center rounded-full text-[11px] font-bold ${isToday ? 'bg-[#2f6b4f] text-white' : index % 7 === 0 ? 'text-[#b44a42]' : index % 7 === 6 ? 'text-[#416b8f]' : 'text-[#56635b]'}`}
+                  >
+                    {day}
+                  </span>
+                  {(dayTasks.length > 0 || dayNotes.length > 0) && (
+                    <span className="text-center text-[9px] font-bold leading-tight text-[#748078]">
+                      {dayTasks.length > 0 ? `업무 ${dayTasks.length}` : ''}
+                      {dayTasks.length > 0 && dayNotes.length > 0 ? ' · ' : ''}
+                      {dayNotes.length > 0 ? `특이 ${dayNotes.length}` : ''}
+                    </span>
+                  )}
+                </>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      {expandedDate && (
+        <DayItemsModal
+          date={expandedDate}
+          data={data}
+          tasks={tasks}
+          close={() => setExpandedDate(null)}
+          openTask={openTask}
+          openRoutine={openRoutine}
+        />
+      )}
+    </section>
   );
 }
 
@@ -2276,6 +2517,7 @@ function CalendarView({
   refreshing: boolean;
 }) {
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'month' | 'week'>('month');
   const year = month.getFullYear();
   const monthIndex = month.getMonth();
   const days = new Date(year, monthIndex + 1, 0).getDate();
@@ -2289,31 +2531,59 @@ function CalendarView({
   const weeks = Array.from({ length: 6 }, (_, index) =>
     cells.slice(index * 7, index * 7 + 7),
   );
+  const weekStart = startOfWeek(month);
+  const weekEnd = addDays(weekStart, 6);
+  const headerTitle =
+    viewMode === 'month'
+      ? `${year}년 ${monthIndex + 1}월`
+      : weekStart.getFullYear() === weekEnd.getFullYear() &&
+          weekStart.getMonth() === weekEnd.getMonth()
+        ? `${weekStart.getFullYear()}년 ${weekStart.getMonth() + 1}월 ${weekStart.getDate()}일 - ${weekEnd.getDate()}일`
+        : `${weekStart.getFullYear()}년 ${weekStart.getMonth() + 1}월 ${weekStart.getDate()}일 - ${weekEnd.getMonth() + 1}월 ${weekEnd.getDate()}일`;
+  function goPrev() {
+    if (viewMode === 'month') setMonth(new Date(year, monthIndex - 1, 1));
+    else setMonth(addDays(month, -7));
+  }
+  function goNext() {
+    if (viewMode === 'month') setMonth(new Date(year, monthIndex + 1, 1));
+    else setMonth(addDays(month, 7));
+  }
+  function goToday() {
+    if (viewMode === 'month') {
+      setMonth(new Date(`${isoDate().slice(0, 7)}-01T00:00:00`));
+    } else {
+      setMonth(new Date());
+    }
+  }
   return (
     <article className="overflow-hidden rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] shadow-[0_12px_36px_rgba(55,74,62,0.06)]">
-      <div className="flex items-center justify-between border-b border-[#e0e4de] px-3 py-4 sm:px-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#e0e4de] px-3 py-4 sm:px-6">
         <div className="flex items-center gap-1 sm:gap-2">
-          <Button
-            aria-label="이전 달"
-            variant="ghost"
-            size="icon"
-            onClick={() => setMonth(new Date(year, monthIndex - 1, 1))}
-          >
+          <Button aria-label="이전" variant="ghost" size="icon" onClick={goPrev}>
             <ChevronLeft />
           </Button>
-          <h3 className="text-base font-black sm:text-lg">
-            {year}년 {monthIndex + 1}월
-          </h3>
-          <Button
-            aria-label="다음 달"
-            variant="ghost"
-            size="icon"
-            onClick={() => setMonth(new Date(year, monthIndex + 1, 1))}
-          >
+          <h3 className="text-base font-black sm:text-lg">{headerTitle}</h3>
+          <Button aria-label="다음" variant="ghost" size="icon" onClick={goNext}>
             <ChevronRight />
           </Button>
         </div>
         <div className="flex items-center gap-1.5 sm:gap-2">
+          <div className="flex items-center gap-0.5 rounded-lg border border-[#d8ded4] bg-white p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('month')}
+              className={`rounded-md px-2.5 py-1 text-xs font-bold transition ${viewMode === 'month' ? 'bg-[#2f6b4f] text-white' : 'text-[#5f6d64]'}`}
+            >
+              월
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('week')}
+              className={`rounded-md px-2.5 py-1 text-xs font-bold transition ${viewMode === 'week' ? 'bg-[#2f6b4f] text-white' : 'text-[#5f6d64]'}`}
+            >
+              주
+            </button>
+          </div>
           <Button
             variant="outline"
             className="rounded-xl bg-white px-2 sm:px-3"
@@ -2334,58 +2604,40 @@ function CalendarView({
           <Button
             variant="outline"
             className="rounded-xl bg-white"
-            onClick={() =>
-              setMonth(new Date(`${isoDate().slice(0, 7)}-01T00:00:00`))
-            }
+            onClick={goToday}
           >
             오늘
           </Button>
         </div>
       </div>
-      <div className="grid grid-cols-7 border-b border-[#e0e4de] bg-[#f1f2ed]">
-        {['일', '월', '화', '수', '목', '금', '토'].map((day, index) => (
-          <div
-            key={day}
-            className={`py-2 text-center text-xs font-bold ${index === 0 ? 'text-[#b44a42]' : index === 6 ? 'text-[#416b8f]' : 'text-[#5f6d64]'}`}
-          >
-            {day}
+      {viewMode === 'week' ? (
+        <WeekCalendarGrid
+          data={data}
+          tasks={tasks}
+          weekStart={weekStart}
+          openTask={openTask}
+          openRoutine={openRoutine}
+          openCreateTask={openCreateTask}
+          openDay={setExpandedDate}
+        />
+      ) : (
+        <>
+          <div className="grid grid-cols-7 border-b border-[#e0e4de] bg-[#f1f2ed]">
+            {['일', '월', '화', '수', '목', '금', '토'].map((day, index) => (
+              <div
+                key={day}
+                className={`py-2 text-center text-xs font-bold ${index === 0 ? 'text-[#b44a42]' : index === 6 ? 'text-[#416b8f]' : 'text-[#5f6d64]'}`}
+              >
+                {day}
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-      <div role="grid" aria-label={`${year}년 ${monthIndex + 1}월 업무 캘린더`}>
-        {weeks.map((week, weekIndex) => {
-          const segments = tasks
-            .flatMap((task) => {
-              const occupied = week
-                .map((day, column) =>
-                  day &&
-                  task.date <= dateKey(day) &&
-                  (task.endDate ?? task.date) >= dateKey(day)
-                    ? column
-                    : -1,
-                )
-                .filter((column) => column >= 0);
-              return occupied.length
-                ? [
-                    {
-                      task,
-                      start: occupied[0],
-                      end: occupied[occupied.length - 1],
-                      lane: 0,
-                    },
-                  ]
-                : [];
-            })
-            .sort(
-              (a, b) =>
-                a.start - b.start || b.end - b.start - (a.end - a.start),
-            );
-          const laneEnds: number[] = [];
-          for (const segment of segments) {
-            const openLane = laneEnds.findIndex((end) => end < segment.start);
-            segment.lane = openLane < 0 ? laneEnds.length : openLane;
-            laneEnds[segment.lane] = segment.end;
-          }
+          <div role="grid" aria-label={`${year}년 ${monthIndex + 1}월 업무 캘린더`}>
+            {weeks.map((week, weekIndex) => {
+          const segments = computeWeekSegments(
+            tasks,
+            week.map((day) => (day ? dateKey(day) : '')),
+          );
           return (
             <div key={weekIndex} className="relative">
               <div className="grid grid-cols-7">
@@ -2483,13 +2735,14 @@ function CalendarView({
                     const category = data.categories.find(
                       (item) => item.id === task.categoryId,
                     );
+                    const overdueFlag = isTaskOverdue(task);
                     return (
                       <button
                         key={`${task.id}-${weekIndex}`}
                         type="button"
                         aria-label={`${task.title}, ${formatDate(task.date)}부터 ${formatDate(task.endDate ?? task.date)}까지`}
                         onClick={() => openTask(task.id)}
-                        className="pointer-events-auto relative z-20 row-start-1 h-5 min-w-0 self-start truncate rounded-md px-2 text-left text-[9px] font-black text-white shadow-sm ring-1 ring-black/5 sm:text-[11px]"
+                        className={`pointer-events-auto relative z-20 row-start-1 h-5 min-w-0 self-start truncate rounded-md px-2 text-left text-[9px] font-black text-white shadow-sm sm:text-[11px] ${overdueFlag ? 'ring-2 ring-[#dc2626]' : 'ring-1 ring-black/5'}`}
                         style={{
                           gridColumn: `${start + 1} / ${end + 2}`,
                           marginTop: `${38 + lane * 24}px`,
@@ -2499,7 +2752,7 @@ function CalendarView({
                           textShadow: '0 1px 2px rgba(0, 0, 0, 0.35)',
                         }}
                       >
-                        {task.priority === 'urgent' ? '! ' : ''}
+                        {task.priority === 'urgent' ? '‼[긴급] ' : ''}
                         {task.title}
                       </button>
                     );
@@ -2507,8 +2760,10 @@ function CalendarView({
               </div>
             </div>
           );
-        })}
-      </div>
+            })}
+          </div>
+        </>
+      )}
       {expandedDate && (
         <DayItemsModal
           date={expandedDate}
@@ -2520,6 +2775,281 @@ function CalendarView({
         />
       )}
     </article>
+  );
+}
+
+const WEEK_GRID_START_HOUR = 6;
+const WEEK_GRID_END_HOUR = 24;
+const WEEK_GRID_HOUR_HEIGHT = 56;
+
+/** 주간 캘린더: 시간이 없는(종일) 업무·루틴은 상단에, 시간이 있는 업무는 시작~종료 시각에 맞춘
+ * 세로 그리드에 배치합니다. 같은 시간대에 겹치는 업무는 자동으로 나란히 배치됩니다. */
+function WeekCalendarGrid({
+  data,
+  tasks,
+  weekStart,
+  openTask,
+  openRoutine,
+  openCreateTask,
+  openDay,
+}: {
+  data: WorkspaceState;
+  tasks: Task[];
+  weekStart: Date;
+  openTask: (id: string) => void;
+  openRoutine: (id: string) => void;
+  openCreateTask: (date?: string) => void;
+  openDay: (date: string) => void;
+}) {
+  const weekdayLabels = ['일', '월', '화', '수', '목', '금', '토'];
+  const dayDates = Array.from({ length: 7 }, (_, index) =>
+    addDays(weekStart, index),
+  );
+  const dateKeys = dayDates.map(dateKeyOf);
+  const todayKey = isoDate();
+
+  const allDayTasks = tasks.filter((task) => !task.time);
+  const allDaySegments = computeWeekSegments(allDayTasks, dateKeys);
+  const visibleAllDaySegments = allDaySegments.filter(
+    (segment) => segment.lane < 3,
+  );
+  const overflowAllDayByDay = dateKeys.map(
+    (date) =>
+      allDayTasks.filter(
+        (task) =>
+          task.date <= date &&
+          (task.endDate ?? task.date) >= date &&
+          !visibleAllDaySegments.some((segment) => segment.task.id === task.id),
+      ).length,
+  );
+  const allDayRowHeight = Math.max(1, Math.min(3, allDaySegments.length ? Math.max(...allDaySegments.map((segment) => segment.lane + 1)) : 1)) * 24 + 8;
+
+  const routinesByDay = dateKeys.map((date) =>
+    data.routines.filter((routine) => routineOccursOnDate(routine, date)),
+  );
+
+  const hours = Array.from(
+    { length: WEEK_GRID_END_HOUR - WEEK_GRID_START_HOUR },
+    (_, index) => WEEK_GRID_START_HOUR + index,
+  );
+  const gridHeight = hours.length * WEEK_GRID_HOUR_HEIGHT;
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+  return (
+    <div>
+      <div className="grid grid-cols-[52px_repeat(7,minmax(0,1fr))] border-b border-[#e0e4de] bg-[#f1f2ed]">
+        <div />
+        {dateKeys.map((date, index) => {
+          const isToday = date === todayKey;
+          return (
+            <div key={date} className="py-2 text-center">
+              <p
+                className={`text-xs font-bold ${index === 0 ? 'text-[#b44a42]' : index === 6 ? 'text-[#416b8f]' : 'text-[#5f6d64]'}`}
+              >
+                {weekdayLabels[index]}
+              </p>
+              <p
+                className={`mx-auto mt-1 grid size-7 place-items-center rounded-full text-sm font-black ${isToday ? 'bg-[#2f6b4f] text-white' : 'text-[#263b2e]'}`}
+              >
+                {dayDates[index].getDate()}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+      <div className="grid grid-cols-[52px_repeat(7,minmax(0,1fr))] border-b border-[#e0e4de] bg-[#fbfaf5]">
+        <div className="py-1 pr-1 text-right text-[9px] font-bold text-[#9aa49d]">
+          종일
+        </div>
+        <div className="relative col-span-7">
+          <div
+            className="grid grid-cols-7"
+            style={{ minHeight: `${allDayRowHeight}px` }}
+          >
+            {visibleAllDaySegments.map(({ task, start, end, lane }) => {
+              const category = data.categories.find(
+                (item) => item.id === task.categoryId,
+              );
+              const overdueFlag = isTaskOverdue(task);
+              return (
+                <button
+                  key={task.id}
+                  type="button"
+                  onClick={() => openTask(task.id)}
+                  className={`relative z-10 row-start-1 h-6 min-w-0 self-start truncate rounded-md px-2 text-left text-[10px] font-black text-white shadow-sm ${overdueFlag ? 'ring-2 ring-[#dc2626]' : 'ring-1 ring-black/5'}`}
+                  style={{
+                    gridColumn: `${start + 1} / ${end + 2}`,
+                    marginTop: `${lane * 26 + 2}px`,
+                    marginLeft: start === 0 ? 0 : 2,
+                    marginRight: end === 6 ? 0 : 2,
+                    background: category?.color ?? '#9aa49d',
+                    textShadow: '0 1px 2px rgba(0, 0, 0, 0.35)',
+                  }}
+                >
+                  {task.priority === 'urgent' ? '‼[긴급] ' : ''}
+                  {task.title}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="col-span-8 grid grid-cols-[52px_repeat(7,minmax(0,1fr))]">
+          <div />
+          {overflowAllDayByDay.map((count, index) => {
+            const extraRoutines = Math.max(0, routinesByDay[index].length - 2);
+            const total = count + extraRoutines;
+            return total > 0 ? (
+              <button
+                key={dateKeys[index]}
+                type="button"
+                onClick={() => openDay(dateKeys[index])}
+                className="px-1 pb-1 text-left text-[9px] font-bold text-[#2f6b4f]"
+              >
+                +{total}개 더보기
+              </button>
+            ) : (
+              <div key={dateKeys[index]} />
+            );
+          })}
+        </div>
+      </div>
+      <div className="grid grid-cols-[52px_repeat(7,minmax(0,1fr))] border-b border-[#e0e4de] bg-[#fbfaf5]">
+        <div />
+        {routinesByDay.map((routines, index) => (
+          <div key={dateKeys[index]} className="space-y-1 p-1">
+            {routines.slice(0, 2).map((routine) => (
+              <button
+                key={routine.id}
+                onClick={() => openRoutine(routine.id)}
+                className="block w-full truncate rounded-md border border-dashed border-[#2f6b4f]/40 bg-white/80 px-1 py-0.5 text-left text-[9px] font-black text-[#2f6b4f]"
+              >
+                <Repeat2 className="mr-1 inline size-3" />
+                {routine.title}
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div className="overflow-x-auto">
+        <div
+          className="grid grid-cols-[52px_repeat(7,minmax(0,1fr))]"
+          style={{ height: `${gridHeight}px` }}
+        >
+          <div className="relative">
+            {hours.map((hour) => (
+              <div
+                key={hour}
+                className="absolute right-2 -translate-y-1/2 text-[10px] font-bold text-[#9aa49d]"
+                style={{ top: `${(hour - WEEK_GRID_START_HOUR) * WEEK_GRID_HOUR_HEIGHT}px` }}
+              >
+                {hour === 0
+                  ? '12AM'
+                  : hour < 12
+                    ? `${hour}AM`
+                    : hour === 12
+                      ? '12PM'
+                      : `${hour - 12}PM`}
+              </div>
+            ))}
+          </div>
+          {dateKeys.map((date) => {
+            const dayBlocks: TimedBlock[] = tasks
+              .filter(
+                (task) =>
+                  task.time &&
+                  task.date <= date &&
+                  (task.endDate ?? task.date) >= date,
+              )
+              .map((task) => {
+                const startMin = clamp(
+                  timeToMinutes(task.time!),
+                  WEEK_GRID_START_HOUR * 60,
+                  WEEK_GRID_END_HOUR * 60 - 15,
+                );
+                const rawEndMin = task.endTime
+                  ? timeToMinutes(task.endTime)
+                  : timeToMinutes(task.time!) + 60;
+                const endMin = clamp(
+                  Math.max(rawEndMin, startMin + 15),
+                  startMin + 15,
+                  WEEK_GRID_END_HOUR * 60,
+                );
+                return { task, startMin, endMin };
+              });
+            const laidOut = layoutTimedBlocks(dayBlocks);
+            const isToday = date === todayKey;
+            return (
+              <div
+                key={date}
+                className={`relative border-l border-[#e5e7e2] ${isToday ? 'bg-[#edf4ef]/40' : ''}`}
+              >
+                {hours.map((hour, index) => (
+                  <div
+                    key={hour}
+                    className="absolute inset-x-0 border-t border-[#eceee9]"
+                    style={{ top: `${index * WEEK_GRID_HOUR_HEIGHT}px` }}
+                  />
+                ))}
+                <button
+                  type="button"
+                  aria-label={`${formatDate(date)} 업무 추가`}
+                  onClick={() => openCreateTask(date)}
+                  className="absolute inset-0 z-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#2f6b4f]"
+                />
+                {isToday &&
+                  nowMinutes >= WEEK_GRID_START_HOUR * 60 &&
+                  nowMinutes <= WEEK_GRID_END_HOUR * 60 && (
+                    <div
+                      className="pointer-events-none absolute inset-x-0 z-30 border-t-2 border-[#dc2626]"
+                      style={{
+                        top: `${((nowMinutes - WEEK_GRID_START_HOUR * 60) / 60) * WEEK_GRID_HOUR_HEIGHT}px`,
+                      }}
+                    />
+                  )}
+                {laidOut.map(({ task, startMin, endMin, lane, laneCount }) => {
+                  const category = data.categories.find(
+                    (item) => item.id === task.categoryId,
+                  );
+                  const overdueFlag = isTaskOverdue(task);
+                  const top =
+                    ((startMin - WEEK_GRID_START_HOUR * 60) / 60) *
+                    WEEK_GRID_HOUR_HEIGHT;
+                  const height = Math.max(
+                    18,
+                    ((endMin - startMin) / 60) * WEEK_GRID_HOUR_HEIGHT - 2,
+                  );
+                  return (
+                    <button
+                      key={task.id}
+                      type="button"
+                      onClick={() => openTask(task.id)}
+                      className={`absolute z-20 overflow-hidden rounded-md px-1.5 py-0.5 text-left text-[10px] font-bold leading-tight text-white shadow-sm ${overdueFlag ? 'ring-2 ring-[#dc2626]' : 'ring-1 ring-black/10'}`}
+                      style={{
+                        top: `${top}px`,
+                        height: `${height}px`,
+                        left: `${(lane / laneCount) * 100}%`,
+                        width: `calc(${100 / laneCount}% - 2px)`,
+                        background: category?.color ?? '#9aa49d',
+                        textShadow: '0 1px 2px rgba(0, 0, 0, 0.35)',
+                      }}
+                    >
+                      <span className="block truncate">
+                        {task.priority === 'urgent' ? '‼[긴급] ' : ''}
+                        {task.title}
+                      </span>
+                      <span className="block truncate text-[9px] font-normal opacity-90">
+                        {formatTaskTime(task.time, task.endTime)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2576,11 +3106,11 @@ function DayItemsModal({
               />
               <span className="min-w-0">
                 <span className="block font-black text-[#263b2e]">
-                  {task.title}
+                  <TaskTitleText task={task} />
                 </span>
                 <span className="block text-xs text-[#718078]">
-                  {formatTaskTime(task.time)} · {category?.name ?? '미분류'} ·{' '}
-                  {statusLabel[task.status]}
+                  {formatTaskTime(task.time, task.endTime)} ·{' '}
+                  {category?.name ?? '미분류'} · {statusLabel[task.status]}
                 </span>
               </span>
             </button>
@@ -2684,7 +3214,12 @@ function TasksView({
       <div className="space-y-2">
         {tasks.length ? (
           [...tasks]
-            .sort((a, b) => compareTaskSchedule(a.date, a.time, b.date, b.time))
+            .sort(
+              (a, b) =>
+                Number(b.priority === 'urgent') -
+                  Number(a.priority === 'urgent') ||
+                compareTaskSchedule(a.date, a.time, b.date, b.time),
+            )
             .map((task) => (
               <TaskCard
                 key={task.id}
@@ -4550,6 +5085,11 @@ function TaskForm({
       return;
     }
     const time = formText(form, 'time') || undefined;
+    const endTime = formText(form, 'endTime') || undefined;
+    if (time && endTime && endTime <= time) {
+      window.alert('종료 시간은 시작 시간보다 늦어야 합니다.');
+      return;
+    }
     const checklist = formText(form, 'checklist')
       .split('\n')
       .map((text) => text.trim())
@@ -4566,6 +5106,7 @@ function TaskForm({
       date: startDate,
       endDate,
       time,
+      endTime: time ? endTime : undefined,
       categoryId: formText(form, 'category'),
       assigneeId: primaryAssignee,
       collaborators,
@@ -4608,9 +5149,14 @@ function TaskForm({
             <input name="endDate" type="date" className={inputClass} />
           </Field>
         </div>
-        <Field label="시간 (선택, 비워두면 종일 업무)">
-          <input name="time" type="time" className={inputClass} />
-        </Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="시작 시간 (선택, 비워두면 종일 업무)">
+            <input name="time" type="time" className={inputClass} />
+          </Field>
+          <Field label="종료 시간 (선택)">
+            <input name="endTime" type="time" className={inputClass} />
+          </Field>
+        </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="담당자">
             <select
@@ -5314,6 +5860,11 @@ function EditTaskForm({
       return;
     }
     const time = formText(form, 'time') || undefined;
+    const endTime = formText(form, 'endTime') || undefined;
+    if (time && endTime && endTime <= time) {
+      window.alert('종료 시간은 시작 시간보다 늦어야 합니다.');
+      return;
+    }
     const oldChecklist = task.checklist;
     const checklist = formText(form, 'checklist')
       .split('\n')
@@ -5335,6 +5886,7 @@ function EditTaskForm({
       date: startDate,
       endDate,
       time,
+      endTime: time ? endTime : undefined,
       categoryId: formText(form, 'category'),
       assigneeId: primaryAssignee,
       collaborators,
@@ -5378,14 +5930,24 @@ function EditTaskForm({
             />
           </Field>
         </div>
-        <Field label="시간 (선택, 비워두면 종일 업무)">
-          <input
-            name="time"
-            type="time"
-            defaultValue={task.time}
-            className={inputClass}
-          />
-        </Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="시작 시간 (선택, 비워두면 종일 업무)">
+            <input
+              name="time"
+              type="time"
+              defaultValue={task.time}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="종료 시간 (선택)">
+            <input
+              name="endTime"
+              type="time"
+              defaultValue={task.endTime}
+              className={inputClass}
+            />
+          </Field>
+        </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="담당자">
             <select
@@ -5566,10 +6128,13 @@ function TaskDetail({
     addComment(comment.trim());
     setComment('');
   }
+  const overdueFlag = isTaskOverdue(task);
   return (
     <ModalShell
-      title={task.title}
-      description={`${formatDate(task.date)}${task.endDate ? ` ~ ${formatDate(task.endDate)}` : ''} · ${formatTaskTime(task.time)} · ${category?.name} · ${names.join(', ') || '미배정'}`}
+      title={
+        task.priority === 'urgent' ? `[긴급] ${task.title}` : task.title
+      }
+      description={`${formatDate(task.date)}${task.endDate ? ` ~ ${formatDate(task.endDate)}` : ''} · ${formatTaskTime(task.time, task.endTime)} · ${category?.name} · ${names.join(', ') || '미배정'}`}
       close={close}
     >
       <div className="space-y-5">
@@ -5577,9 +6142,16 @@ function TaskDetail({
           <span className="rounded-full bg-[#e3eee7] px-2 py-1 text-xs font-bold text-[#2f6b4f]">
             {statusLabel[task.status]}
           </span>
-          <span className="rounded-full bg-[#f1f0eb] px-2 py-1 text-xs font-bold">
-            {priorityLabel[task.priority]}
+          <span
+            className={`rounded-full px-2 py-1 text-xs font-bold ${task.priority === 'urgent' ? 'bg-[#dbeafe] text-[#1d4ed8]' : 'bg-[#f1f0eb] text-[#4b564f]'}`}
+          >
+            {task.priority === 'urgent' ? '‼ 긴급' : priorityLabel[task.priority]}
           </span>
+          {overdueFlag && (
+            <span className="rounded-full bg-[#fde2e1] px-2 py-1 text-xs font-bold text-[#c0392b]">
+              지연
+            </span>
+          )}
           {task.endDate && (
             <span className="rounded-full bg-[#fff1dd] px-2 py-1 text-xs font-bold text-[#806743]">
               {dday(task.endDate)}
