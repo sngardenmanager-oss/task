@@ -216,6 +216,15 @@ function isTaskOverdue(task: Task) {
   return task.status !== 'completed' && (task.endDate ?? task.date) < isoDate();
 }
 
+/** 캘린더 막대 배경색: 긴급은 파란색, 지연은 빨간색으로 분류(카테고리 색상 무시)를 덮어씁니다. */
+function taskBarBackground(task: Task, categoryColor?: string) {
+  if (task.status !== 'completed' && task.priority === 'urgent') {
+    return '#1d4ed8';
+  }
+  if (isTaskOverdue(task)) return '#dc2626';
+  return categoryColor ?? '#9aa49d';
+}
+
 /** 날짜 오름차순, 같은 날짜면 종일 → 오전 → 오후, 같은 시간대면 시각 오름차순으로 정렬합니다. */
 function compareTaskSchedule(
   aDate: string,
@@ -2735,20 +2744,19 @@ function CalendarView({
                     const category = data.categories.find(
                       (item) => item.id === task.categoryId,
                     );
-                    const overdueFlag = isTaskOverdue(task);
                     return (
                       <button
                         key={`${task.id}-${weekIndex}`}
                         type="button"
                         aria-label={`${task.title}, ${formatDate(task.date)}부터 ${formatDate(task.endDate ?? task.date)}까지`}
                         onClick={() => openTask(task.id)}
-                        className={`pointer-events-auto relative z-20 row-start-1 h-5 min-w-0 self-start truncate rounded-md px-2 text-left text-[9px] font-black text-white shadow-sm sm:text-[11px] ${overdueFlag ? 'ring-2 ring-[#dc2626]' : 'ring-1 ring-black/5'}`}
+                        className="pointer-events-auto relative z-20 row-start-1 h-5 min-w-0 self-start truncate rounded-md px-2 text-left text-[9px] font-black text-white shadow-sm ring-1 ring-black/5 sm:text-[11px]"
                         style={{
                           gridColumn: `${start + 1} / ${end + 2}`,
                           marginTop: `${38 + lane * 24}px`,
                           marginLeft: start === 0 ? 0 : 2,
                           marginRight: end === 6 ? 0 : 2,
-                          background: category?.color ?? '#9aa49d',
+                          background: taskBarBackground(task, category?.color),
                           textShadow: '0 1px 2px rgba(0, 0, 0, 0.35)',
                         }}
                       >
@@ -2871,19 +2879,18 @@ function WeekCalendarGrid({
               const category = data.categories.find(
                 (item) => item.id === task.categoryId,
               );
-              const overdueFlag = isTaskOverdue(task);
               return (
                 <button
                   key={task.id}
                   type="button"
                   onClick={() => openTask(task.id)}
-                  className={`relative z-10 row-start-1 h-6 min-w-0 self-start truncate rounded-md px-2 text-left text-[10px] font-black text-white shadow-sm ${overdueFlag ? 'ring-2 ring-[#dc2626]' : 'ring-1 ring-black/5'}`}
+                  className="relative z-10 row-start-1 h-6 min-w-0 self-start truncate rounded-md px-2 text-left text-[10px] font-black text-white shadow-sm ring-1 ring-black/5"
                   style={{
                     gridColumn: `${start + 1} / ${end + 2}`,
                     marginTop: `${lane * 26 + 2}px`,
                     marginLeft: start === 0 ? 0 : 2,
                     marginRight: end === 6 ? 0 : 2,
-                    background: category?.color ?? '#9aa49d',
+                    background: taskBarBackground(task, category?.color),
                     textShadow: '0 1px 2px rgba(0, 0, 0, 0.35)',
                   }}
                 >
@@ -3011,7 +3018,6 @@ function WeekCalendarGrid({
                   const category = data.categories.find(
                     (item) => item.id === task.categoryId,
                   );
-                  const overdueFlag = isTaskOverdue(task);
                   const top =
                     ((startMin - WEEK_GRID_START_HOUR * 60) / 60) *
                     WEEK_GRID_HOUR_HEIGHT;
@@ -3024,13 +3030,13 @@ function WeekCalendarGrid({
                       key={task.id}
                       type="button"
                       onClick={() => openTask(task.id)}
-                      className={`absolute z-20 overflow-hidden rounded-md px-1.5 py-0.5 text-left text-[10px] font-bold leading-tight text-white shadow-sm ${overdueFlag ? 'ring-2 ring-[#dc2626]' : 'ring-1 ring-black/10'}`}
+                      className="absolute z-20 overflow-hidden rounded-md px-1.5 py-0.5 text-left text-[10px] font-bold leading-tight text-white shadow-sm ring-1 ring-black/10"
                       style={{
                         top: `${top}px`,
                         height: `${height}px`,
                         left: `${(lane / laneCount) * 100}%`,
                         width: `calc(${100 / laneCount}% - 2px)`,
-                        background: category?.color ?? '#9aa49d',
+                        background: taskBarBackground(task, category?.color),
                         textShadow: '0 1px 2px rgba(0, 0, 0, 0.35)',
                       }}
                     >
