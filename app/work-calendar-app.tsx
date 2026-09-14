@@ -87,6 +87,7 @@ type AppHistoryEntry = {
   selectedTaskId: string | null;
   selectedRoutineId: string | null;
   selectedDate: string;
+  selectedTime: string | null;
 };
 
 const appHistoryKey = '__snoopyWorkCalendar';
@@ -206,6 +207,17 @@ function formatTaskTime(time?: string, endTime?: string) {
 function timeToMinutes(value: string) {
   const [hourText, minuteText] = value.split(':');
   return Number(hourText) * 60 + Number(minuteText);
+}
+
+function minutesToTime(value: number) {
+  const normalized = ((value % 1440) + 1440) % 1440;
+  return `${String(Math.floor(normalized / 60)).padStart(2, '0')}:${String(
+    normalized % 60,
+  ).padStart(2, '0')}`;
+}
+
+function addMinutesToTime(value: string, minutes: number) {
+  return minutesToTime(timeToMinutes(value) + minutes);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -560,6 +572,7 @@ export default function WorkCalendarApp({
     null,
   );
   const [selectedDate, setSelectedDate] = useState(isoDate());
+  const [selectedTime, setSelectedTime] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [memberFilter, setMemberFilter] = useState('all');
@@ -582,6 +595,7 @@ export default function WorkCalendarApp({
   const selectedTaskIdRef = useRef(selectedTaskId);
   const selectedRoutineIdRef = useRef(selectedRoutineId);
   const selectedDateRef = useRef(selectedDate);
+  const selectedTimeRef = useRef(selectedTime);
   const collectingDesktopNews = useRef(false);
   const newsFullyLoaded = useRef(false);
   const newsLoadingFull = useRef(false);
@@ -607,6 +621,9 @@ export default function WorkCalendarApp({
   useEffect(() => {
     selectedDateRef.current = selectedDate;
   }, [selectedDate]);
+  useEffect(() => {
+    selectedTimeRef.current = selectedTime;
+  }, [selectedTime]);
 
   useEffect(() => {
     const key = `snoopy-work-calendar-offline:${actor.email.toLowerCase()}`;
@@ -635,6 +652,7 @@ export default function WorkCalendarApp({
       selectedTaskId: selectedTaskIdRef.current,
       selectedRoutineId: selectedRoutineIdRef.current,
       selectedDate: selectedDateRef.current,
+      selectedTime: selectedTimeRef.current,
     });
     const existingEntry = window.history.state?.[appHistoryKey] as
       | AppHistoryEntry
@@ -680,11 +698,13 @@ export default function WorkCalendarApp({
       selectedTaskIdRef.current = entry.selectedTaskId;
       selectedRoutineIdRef.current = entry.selectedRoutineId;
       selectedDateRef.current = entry.selectedDate;
+      selectedTimeRef.current = entry.selectedTime ?? null;
       setView(entry.view);
       setModal(entry.modal);
       setSelectedTaskId(entry.selectedTaskId);
       setSelectedRoutineId(entry.selectedRoutineId);
       setSelectedDate(entry.selectedDate);
+      setSelectedTime(entry.selectedTime ?? null);
       setMobileMenu(false);
     };
 
@@ -933,6 +953,7 @@ export default function WorkCalendarApp({
       selectedTaskId: selectedTaskIdRef.current,
       selectedRoutineId: selectedRoutineIdRef.current,
       selectedDate: selectedDateRef.current,
+      selectedTime: selectedTimeRef.current,
       ...overrides,
     };
     window.history.pushState(
@@ -959,6 +980,10 @@ export default function WorkCalendarApp({
       selectedDateRef.current = options.selectedDate;
       setSelectedDate(options.selectedDate);
     }
+    if (options.selectedTime !== undefined) {
+      selectedTimeRef.current = options.selectedTime;
+      setSelectedTime(options.selectedTime);
+    }
     setModal(nextModal);
     pushAppHistory({ ...options, modal: nextModal });
   }
@@ -979,9 +1004,9 @@ export default function WorkCalendarApp({
     openModal('detail', { selectedTaskId: taskId });
   }
 
-  function openCreateTask(date = today) {
+  function openCreateTask(date = today, time: string | null = null) {
     if (!canEdit) return setToast('댓글 사용자는 업무를 등록할 수 없습니다.');
-    openModal('task', { selectedDate: date });
+    openModal('task', { selectedDate: date, selectedTime: time });
   }
 
   function openRoutine(routineId: string) {
@@ -1757,6 +1782,7 @@ export default function WorkCalendarApp({
           data={data}
           actor={actor}
           defaultDate={selectedDate}
+          defaultTime={selectedTime ?? undefined}
           close={closeModal}
           save={(task) =>
             updateData(
@@ -2101,7 +2127,7 @@ function TodayView({
   setTaskStatus: (id: string, status: Task['status']) => void;
   navigate: (view: View) => void;
   focusTaskList: (focus: 'today' | 'overdue' | 'dday') => void;
-  openCreateTask: (date?: string) => void;
+  openCreateTask: (date?: string, time?: string | null) => void;
 }) {
   const today = isoDate();
   const previousDate = shiftIsoDate(today, -1);
@@ -2521,7 +2547,7 @@ function CalendarView({
   setMonth: (date: Date) => void;
   openTask: (id: string) => void;
   openRoutine: (id: string) => void;
-  openCreateTask: (date?: string) => void;
+  openCreateTask: (date?: string, time?: string | null) => void;
   refresh: () => Promise<void>;
   refreshing: boolean;
 }) {
@@ -2806,7 +2832,7 @@ function WeekCalendarGrid({
   weekStart: Date;
   openTask: (id: string) => void;
   openRoutine: (id: string) => void;
-  openCreateTask: (date?: string) => void;
+  openCreateTask: (date?: string, time?: string | null) => void;
   openDay: (date: string) => void;
 }) {
   const weekdayLabels = ['일', '월', '화', '수', '목', '금', '토'];
@@ -3000,8 +3026,22 @@ function WeekCalendarGrid({
                 ))}
                 <button
                   type="button"
-                  aria-label={`${formatDate(date)} 업무 추가`}
-                  onClick={() => openCreateTask(date)}
+                  aria-label={`${formatDate(date)} 시간대 업무 추가`}
+                  onClick={(event) => {
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    const slot = clamp(
+                      Math.floor(
+                        ((event.clientY - bounds.top) / WEEK_GRID_HOUR_HEIGHT) *
+                          2,
+                      ),
+                      0,
+                      hours.length * 2 - 1,
+                    );
+                    openCreateTask(
+                      date,
+                      minutesToTime(WEEK_GRID_START_HOUR * 60 + slot * 30),
+                    );
+                  }}
                   className="absolute inset-0 z-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#2f6b4f]"
                 />
                 {isToday &&
@@ -5067,20 +5107,174 @@ function CollaboratorsField({
   );
 }
 
+type TimePickerParts = {
+  period: '' | 'am' | 'pm';
+  hour: string;
+  minute: string;
+};
+
+function timePickerParts(value: string): TimePickerParts {
+  if (!/^\d{2}:(00|30)$/.test(value)) {
+    return { period: '', hour: '', minute: '' };
+  }
+  const [hourText, minute] = value.split(':');
+  const hour = Number(hourText);
+  return {
+    period: hour < 12 ? 'am' : 'pm',
+    hour: String(hour % 12 || 12).padStart(2, '0'),
+    minute,
+  };
+}
+
+function timeFromPickerParts({ period, hour, minute }: TimePickerParts) {
+  if (!period || !hour || !minute) return '';
+  const hour24 = (Number(hour) % 12) + (period === 'pm' ? 12 : 0);
+  return `${String(hour24).padStart(2, '0')}:${minute}`;
+}
+
+function TimePicker({
+  name,
+  label,
+  value,
+  onChange,
+}: {
+  name: 'time' | 'endTime';
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [parts, setParts] = useState<TimePickerParts>(() =>
+    timePickerParts(value),
+  );
+
+  function updatePart(part: keyof TimePickerParts, nextValue: string) {
+    const nextParts = { ...parts, [part]: nextValue } as TimePickerParts;
+    setParts(nextParts);
+    onChange(timeFromPickerParts(nextParts));
+  }
+
+  function clearTime() {
+    setParts({ period: '', hour: '', minute: '' });
+    onChange('');
+  }
+
+  return (
+    <div className="rounded-xl border border-[#d8ded4] bg-white p-2">
+      <input name={name} type="hidden" value={value} />
+      <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-1.5">
+        <select
+          aria-label={`${label} 오전 또는 오후`}
+          value={parts.period}
+          onChange={(event) => updatePart('period', event.target.value)}
+          className="h-9 min-w-0 rounded-lg border border-[#d8ded4] bg-white px-2 text-sm font-bold outline-none focus:border-[#2f6b4f] focus:ring-2 focus:ring-[#2f6b4f]/10"
+        >
+          <option value="">오전/오후</option>
+          <option value="am">오전</option>
+          <option value="pm">오후</option>
+        </select>
+        <select
+          aria-label={`${label} 시`}
+          value={parts.hour}
+          onChange={(event) => updatePart('hour', event.target.value)}
+          className="h-9 min-w-0 rounded-lg border border-[#d8ded4] bg-white px-2 text-sm font-bold outline-none focus:border-[#2f6b4f] focus:ring-2 focus:ring-[#2f6b4f]/10"
+        >
+          <option value="">시</option>
+          {Array.from({ length: 12 }, (_, index) => {
+            const hour = String(index + 1).padStart(2, '0');
+            return (
+              <option key={hour} value={hour}>
+                {hour}시
+              </option>
+            );
+          })}
+        </select>
+        <select
+          aria-label={`${label} 분`}
+          value={parts.minute}
+          onChange={(event) => updatePart('minute', event.target.value)}
+          className="h-9 min-w-0 rounded-lg border border-[#d8ded4] bg-white px-2 text-sm font-bold outline-none focus:border-[#2f6b4f] focus:ring-2 focus:ring-[#2f6b4f]/10"
+        >
+          <option value="">분</option>
+          <option value="00">00분</option>
+          <option value="30">30분</option>
+        </select>
+      </div>
+      <div className="mt-1.5 flex items-center justify-between gap-2 px-0.5 text-[11px]">
+        <span className="font-bold text-[#748078]">
+          {value ? formatClockTime(value) : '시간 미정 (종일 업무)'}
+        </span>
+        {(value || parts.period || parts.hour || parts.minute) && (
+          <button
+            type="button"
+            onClick={clearTime}
+            className="font-bold text-[#5f6d64] underline underline-offset-2 hover:text-[#2f6b4f]"
+          >
+            시간 없음
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TaskForm({
   data,
   actor,
   defaultDate,
+  defaultTime,
   close,
   save,
 }: {
   data: WorkspaceState;
   actor: Member;
   defaultDate: string;
+  defaultTime?: string;
   close: () => void;
   save: (task: Task) => void;
 }) {
   const assigneeId = defaultAssigneeId(data, actor);
+  const startsOvernight = Boolean(
+    defaultTime && timeToMinutes(defaultTime) + 60 >= 1440,
+  );
+  const [startDate, setStartDate] = useState(defaultDate);
+  const [endDate, setEndDate] = useState(
+    startsOvernight ? shiftIsoDate(defaultDate, 1) : '',
+  );
+  const [time, setTime] = useState(defaultTime ?? '');
+  const [endTime, setEndTime] = useState(
+    defaultTime ? addMinutesToTime(defaultTime, 60) : '',
+  );
+  const [autoEndDate, setAutoEndDate] = useState(startsOvernight);
+
+  function updateStartDate(nextDate: string) {
+    setStartDate(nextDate);
+    if (autoEndDate) setEndDate(shiftIsoDate(nextDate, 1));
+  }
+
+  function updateEndDate(nextDate: string) {
+    setEndDate(nextDate);
+    setAutoEndDate(false);
+  }
+
+  function updateStartTime(nextTime: string) {
+    setTime(nextTime);
+    if (!nextTime) {
+      setEndTime('');
+      if (autoEndDate) setEndDate('');
+      setAutoEndDate(false);
+      return;
+    }
+
+    setEndTime(addMinutesToTime(nextTime, 60));
+    const endsOvernight = timeToMinutes(nextTime) + 60 >= 1440;
+    if (endsOvernight) {
+      setEndDate(shiftIsoDate(startDate, 1));
+    } else if (autoEndDate) {
+      setEndDate('');
+    }
+    setAutoEndDate(endsOvernight);
+  }
+
   function submit(event: FormSubmitEvent) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -5092,7 +5286,7 @@ function TaskForm({
     }
     const time = formText(form, 'time') || undefined;
     const endTime = formText(form, 'endTime') || undefined;
-    if (time && endTime && endTime <= time) {
+    if (time && endTime && endTime <= time && (!endDate || endDate <= startDate)) {
       window.alert('종료 시간은 시작 시간보다 늦어야 합니다.');
       return;
     }
@@ -5146,21 +5340,40 @@ function TaskForm({
             <input
               name="date"
               type="date"
-              defaultValue={defaultDate}
+              value={startDate}
+              onChange={(event) => updateStartDate(event.target.value)}
               required
               className={inputClass}
             />
           </Field>
           <Field label="종료일">
-            <input name="endDate" type="date" className={inputClass} />
+            <input
+              name="endDate"
+              type="date"
+              value={endDate}
+              onChange={(event) => updateEndDate(event.target.value)}
+              className={inputClass}
+            />
           </Field>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="시작 시간 (선택, 비워두면 종일 업무)">
-            <input name="time" type="time" className={inputClass} />
+            <TimePicker
+              key={`create-start-${time}`}
+              name="time"
+              label="시작 시간"
+              value={time}
+              onChange={updateStartTime}
+            />
           </Field>
-          <Field label="종료 시간 (선택)">
-            <input name="endTime" type="time" className={inputClass} />
+          <Field label="종료 시간 (시작 후 1시간 자동 설정)">
+            <TimePicker
+              key={`create-end-${endTime}`}
+              name="endTime"
+              label="종료 시간"
+              value={endTime}
+              onChange={setEndTime}
+            />
           </Field>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -5856,6 +6069,52 @@ function EditTaskForm({
   close: () => void;
   save: (task: Task) => void;
 }) {
+  const hasSuggestedEndTime = Boolean(task.time && !task.endTime);
+  const startsOvernight = Boolean(
+    hasSuggestedEndTime &&
+      task.time &&
+      timeToMinutes(task.time) + 60 >= 1440 &&
+      !task.endDate,
+  );
+  const [startDate, setStartDate] = useState(task.date);
+  const [endDate, setEndDate] = useState(
+    startsOvernight ? shiftIsoDate(task.date, 1) : (task.endDate ?? ''),
+  );
+  const [time, setTime] = useState(task.time ?? '');
+  const [endTime, setEndTime] = useState(
+    task.time ? (task.endTime ?? addMinutesToTime(task.time, 60)) : '',
+  );
+  const [autoEndDate, setAutoEndDate] = useState(startsOvernight);
+
+  function updateStartDate(nextDate: string) {
+    setStartDate(nextDate);
+    if (autoEndDate) setEndDate(shiftIsoDate(nextDate, 1));
+  }
+
+  function updateEndDate(nextDate: string) {
+    setEndDate(nextDate);
+    setAutoEndDate(false);
+  }
+
+  function updateStartTime(nextTime: string) {
+    setTime(nextTime);
+    if (!nextTime) {
+      setEndTime('');
+      if (autoEndDate) setEndDate('');
+      setAutoEndDate(false);
+      return;
+    }
+
+    setEndTime(addMinutesToTime(nextTime, 60));
+    const endsOvernight = timeToMinutes(nextTime) + 60 >= 1440;
+    if (endsOvernight) {
+      setEndDate(shiftIsoDate(startDate, 1));
+    } else if (autoEndDate) {
+      setEndDate('');
+    }
+    setAutoEndDate(endsOvernight);
+  }
+
   function submit(event: FormSubmitEvent) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -5867,7 +6126,7 @@ function EditTaskForm({
     }
     const time = formText(form, 'time') || undefined;
     const endTime = formText(form, 'endTime') || undefined;
-    if (time && endTime && endTime <= time) {
+    if (time && endTime && endTime <= time && (!endDate || endDate <= startDate)) {
       window.alert('종료 시간은 시작 시간보다 늦어야 합니다.');
       return;
     }
@@ -5922,7 +6181,8 @@ function EditTaskForm({
             <input
               name="date"
               type="date"
-              defaultValue={task.date}
+              value={startDate}
+              onChange={(event) => updateStartDate(event.target.value)}
               required
               className={inputClass}
             />
@@ -5931,26 +6191,29 @@ function EditTaskForm({
             <input
               name="endDate"
               type="date"
-              defaultValue={task.endDate}
+              value={endDate}
+              onChange={(event) => updateEndDate(event.target.value)}
               className={inputClass}
             />
           </Field>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="시작 시간 (선택, 비워두면 종일 업무)">
-            <input
+            <TimePicker
+              key={`edit-start-${time}`}
               name="time"
-              type="time"
-              defaultValue={task.time}
-              className={inputClass}
+              label="시작 시간"
+              value={time}
+              onChange={updateStartTime}
             />
           </Field>
-          <Field label="종료 시간 (선택)">
-            <input
+          <Field label="종료 시간 (시작 후 1시간 자동 설정)">
+            <TimePicker
+              key={`edit-end-${endTime}`}
               name="endTime"
-              type="time"
-              defaultValue={task.endTime}
-              className={inputClass}
+              label="종료 시간"
+              value={endTime}
+              onChange={setEndTime}
             />
           </Field>
         </div>
