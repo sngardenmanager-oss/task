@@ -182,6 +182,35 @@ function formatDate(value: string) {
   return `${date.getMonth() + 1}월 ${date.getDate()}일`;
 }
 
+/** 종일 업무는 0, 오전(12시 이전 시작)은 1, 오후는 2를 반환합니다. */
+function taskTimeSlot(time?: string) {
+  if (!time) return 0;
+  return time < '12:00' ? 1 : 2;
+}
+
+function formatTaskTime(time?: string) {
+  if (!time) return '종일';
+  const [hourText, minuteText] = time.split(':');
+  const hour = Number(hourText);
+  const period = hour < 12 ? '오전' : '오후';
+  const displayHour = hour % 12 === 0 ? 12 : hour % 12;
+  return `${period} ${displayHour}:${minuteText}`;
+}
+
+/** 날짜 오름차순, 같은 날짜면 종일 → 오전 → 오후, 같은 시간대면 시각 오름차순으로 정렬합니다. */
+function compareTaskSchedule(
+  aDate: string,
+  aTime: string | undefined,
+  bDate: string,
+  bTime: string | undefined,
+) {
+  return (
+    aDate.localeCompare(bDate) ||
+    taskTimeSlot(aTime) - taskTimeSlot(bTime) ||
+    (aTime ?? '').localeCompare(bTime ?? '')
+  );
+}
+
 function dday(value: string) {
   const today = new Date(`${isoDate()}T00:00:00`).getTime();
   const target = new Date(`${value}T00:00:00`).getTime();
@@ -737,7 +766,12 @@ export default function WorkCalendarApp({
       }
     }
     const byEndDateAsc = (a: Task, b: Task) =>
-      (a.endDate ?? a.date).localeCompare(b.endDate ?? b.date);
+      compareTaskSchedule(
+        a.endDate ?? a.date,
+        a.time,
+        b.endDate ?? b.date,
+        b.time,
+      );
     nextOverdue.sort(byEndDateAsc);
     nextTodayTasks.sort(byEndDateAsc);
     nextDdayTasks.sort(byEndDateAsc);
@@ -1904,8 +1938,9 @@ function TaskCard({
           )}
         </span>
         <span className="mt-1 block truncate text-xs text-[#5f6d64]">
-          {formatDate(task.date)} · {names.length ? names.join(', ') : '미배정'}{' '}
-          · {statusLabel[task.status]}
+          {formatDate(task.date)} · {formatTaskTime(task.time)} ·{' '}
+          {names.length ? names.join(', ') : '미배정'} ·{' '}
+          {statusLabel[task.status]}
         </span>
       </span>
       <ChevronRight className="size-4 text-[#9aa49d] transition group-hover:translate-x-0.5" />
@@ -1950,7 +1985,12 @@ function TodayView({
   const sortedDdayTasks = [...ddayTasks].sort(
     (a, b) =>
       Number(a.status === 'completed') - Number(b.status === 'completed') ||
-      (a.endDate ?? a.date).localeCompare(b.endDate ?? b.date),
+      compareTaskSchedule(
+        a.endDate ?? a.date,
+        a.time,
+        b.endDate ?? b.date,
+        b.time,
+      ),
   );
   const recentNews = news
     .filter((item) => {
@@ -1999,9 +2039,7 @@ function TodayView({
             className="rounded-2xl border border-[#d8ded4] bg-[#fbfaf5] p-4 text-left shadow-[0_7px_22px_rgba(55,74,62,0.05)] transition hover:-translate-y-0.5"
           >
             <div className="flex items-start justify-between">
-              <p className="text-xs font-bold text-[#56645b]">
-                {metric.label}
-              </p>
+              <p className="text-xs font-bold text-[#56645b]">{metric.label}</p>
               {index === 1 && (
                 <CheckCircle2 className="size-4 text-[#2f6b4f]" />
               )}
@@ -2089,6 +2127,7 @@ function TodayView({
                       <span className="mt-1 block text-xs text-[#748078]">
                         {priorityLabel[task.priority]} ·{' '}
                         {formatDate(task.endDate ?? task.date)} ·{' '}
+                        {formatTaskTime(task.time)} ·{' '}
                         {dday(task.endDate ?? task.date)}
                       </span>
                     </button>
@@ -2499,9 +2538,13 @@ function DayItemsModal({
   openTask: (id: string) => void;
   openRoutine: (id: string) => void;
 }) {
-  const dayTasks = tasks.filter(
-    (task) => task.date <= date && (task.endDate ?? task.date) >= date,
-  );
+  const dayTasks = tasks
+    .filter((task) => task.date <= date && (task.endDate ?? task.date) >= date)
+    .sort(
+      (a, b) =>
+        taskTimeSlot(a.time) - taskTimeSlot(b.time) ||
+        (a.time ?? '').localeCompare(b.time ?? ''),
+    );
   const routines = data.routines.filter((routine) =>
     routineOccursOnDate(routine, date),
   );
@@ -2536,7 +2579,8 @@ function DayItemsModal({
                   {task.title}
                 </span>
                 <span className="block text-xs text-[#718078]">
-                  {category?.name ?? '미분류'} · {statusLabel[task.status]}
+                  {formatTaskTime(task.time)} · {category?.name ?? '미분류'} ·{' '}
+                  {statusLabel[task.status]}
                 </span>
               </span>
             </button>
@@ -2640,7 +2684,7 @@ function TasksView({
       <div className="space-y-2">
         {tasks.length ? (
           [...tasks]
-            .sort((a, b) => a.date.localeCompare(b.date))
+            .sort((a, b) => compareTaskSchedule(a.date, a.time, b.date, b.time))
             .map((task) => (
               <TaskCard
                 key={task.id}
@@ -4360,7 +4404,8 @@ function NotificationsView({
               >
                 <strong className="block truncate text-sm">{task.title}</strong>
                 <span className="text-xs text-[#748078]">
-                  {formatDate(task.date)} · {assigneeNames(task, data).join(', ')}
+                  {formatDate(task.date)} ·{' '}
+                  {assigneeNames(task, data).join(', ')}
                 </span>
               </button>
               {isAdmin && (
@@ -4504,6 +4549,7 @@ function TaskForm({
       window.alert('종료일은 시작일보다 빠를 수 없습니다.');
       return;
     }
+    const time = formText(form, 'time') || undefined;
     const checklist = formText(form, 'checklist')
       .split('\n')
       .map((text) => text.trim())
@@ -4519,6 +4565,7 @@ function TaskForm({
       description: formText(form, 'description'),
       date: startDate,
       endDate,
+      time,
       categoryId: formText(form, 'category'),
       assigneeId: primaryAssignee,
       collaborators,
@@ -4561,6 +4608,9 @@ function TaskForm({
             <input name="endDate" type="date" className={inputClass} />
           </Field>
         </div>
+        <Field label="시간 (선택, 비워두면 종일 업무)">
+          <input name="time" type="time" className={inputClass} />
+        </Field>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="담당자">
             <select
@@ -5263,6 +5313,7 @@ function EditTaskForm({
       window.alert('종료일은 시작일보다 빠를 수 없습니다.');
       return;
     }
+    const time = formText(form, 'time') || undefined;
     const oldChecklist = task.checklist;
     const checklist = formText(form, 'checklist')
       .split('\n')
@@ -5283,6 +5334,7 @@ function EditTaskForm({
       description: formText(form, 'description'),
       date: startDate,
       endDate,
+      time,
       categoryId: formText(form, 'category'),
       assigneeId: primaryAssignee,
       collaborators,
@@ -5326,6 +5378,14 @@ function EditTaskForm({
             />
           </Field>
         </div>
+        <Field label="시간 (선택, 비워두면 종일 업무)">
+          <input
+            name="time"
+            type="time"
+            defaultValue={task.time}
+            className={inputClass}
+          />
+        </Field>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="담당자">
             <select
@@ -5509,7 +5569,7 @@ function TaskDetail({
   return (
     <ModalShell
       title={task.title}
-      description={`${formatDate(task.date)}${task.endDate ? ` ~ ${formatDate(task.endDate)}` : ''} · ${category?.name} · ${names.join(', ') || '미배정'}`}
+      description={`${formatDate(task.date)}${task.endDate ? ` ~ ${formatDate(task.endDate)}` : ''} · ${formatTaskTime(task.time)} · ${category?.name} · ${names.join(', ') || '미배정'}`}
       close={close}
     >
       <div className="space-y-5">
