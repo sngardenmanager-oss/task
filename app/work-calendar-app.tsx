@@ -91,6 +91,18 @@ type AppHistoryEntry = {
 
 const appHistoryKey = '__snoopyWorkCalendar';
 
+/** 이 이메일만 오늘 화면에서 모든 담당자의 업무를 파악할 수 있습니다. 그 외 사용자는 자신이 담당자이거나
+ * 협업자로 지정된 업무만 오늘/지연/D-day 목록에서 보게 됩니다. */
+const FULL_ACCESS_EMAIL = 'sn.gardenmanager@gmail.com';
+
+function isTaskVisibleTo(task: Task, member: Pick<Member, 'id' | 'email'>) {
+  return (
+    member.email === FULL_ACCESS_EMAIL ||
+    task.assigneeId === member.id ||
+    task.collaborators.includes(member.id)
+  );
+}
+
 const viewMeta: Record<
   View,
   { label: string; icon: typeof CalendarDays; subtitle: string }
@@ -203,6 +215,12 @@ function routineOccursOnDate(routine: Routine, date: string) {
   return date === routine.nextDate;
 }
 
+function assigneeNames(task: Task, data: WorkspaceState) {
+  return [task.assigneeId, ...task.collaborators]
+    .map((id) => data.members.find((member) => member.id === id)?.name)
+    .filter((name): name is string => Boolean(name));
+}
+
 function roleLabel(member: Member) {
   return member.role === 'admin'
     ? '관리자'
@@ -309,11 +327,10 @@ function exportCalendarIcal(data: WorkspaceState) {
   const events = data.tasks.flatMap((task) => {
     const category =
       data.categories.find((item) => item.id === task.categoryId)?.name ?? '';
-    const assignee =
-      data.members.find((item) => item.id === task.assigneeId)?.name ?? '';
+    const names = assigneeNames(task, data);
     const description = [
       task.description,
-      assignee ? `담당자: ${assignee}` : '',
+      names.length ? `담당자: ${names.join(', ')}` : '',
       ...task.checklist.map((item) => `${item.done ? '✓' : '□'} ${item.text}`),
     ]
       .filter(Boolean)
@@ -406,6 +423,9 @@ export default function WorkCalendarApp({
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [memberFilter, setMemberFilter] = useState('all');
+  const [taskFocus, setTaskFocus] = useState<
+    'today' | 'overdue' | 'dday' | null
+  >(null);
   const [monthCursor, setMonthCursor] = useState(
     () => new Date(`${isoDate().slice(0, 7)}-01T00:00:00`),
   );
@@ -693,32 +713,64 @@ export default function WorkCalendarApp({
     [data.tasks, deferredSearch, statusFilter, memberFilter],
   );
 
-  const { completionRequests, overdue, todayTasks } = useMemo(() => {
+  const { completionRequests, overdue, todayTasks, ddayTasks } = useMemo(() => {
     const nextCompletionRequests: Task[] = [];
     const nextOverdue: Task[] = [];
     const nextTodayTasks: Task[] = [];
+    const nextDdayTasks: Task[] = [];
     for (const task of data.tasks) {
       const endDate = task.endDate ?? task.date;
       if (task.status === 'completion_requested') {
         nextCompletionRequests.push(task);
       }
-      if (endDate < today && task.status !== 'completed') {
-        nextOverdue.push(task);
+      if (!isTaskVisibleTo(task, actor)) continue;
+      if (task.status !== 'completed') {
+        if (endDate < today) {
+          nextOverdue.push(task);
+        } else {
+          nextTodayTasks.push(task);
+        }
       }
-      if (
-        task.date <= today &&
-        endDate >= today &&
-        task.status !== 'completed'
-      ) {
-        nextTodayTasks.push(task);
+      const dayDiff = dayDifference(today, endDate);
+      if (dayDiff <= 7) {
+        nextDdayTasks.push(task);
       }
     }
+    const byEndDateAsc = (a: Task, b: Task) =>
+      (a.endDate ?? a.date).localeCompare(b.endDate ?? b.date);
+    nextOverdue.sort(byEndDateAsc);
+    nextTodayTasks.sort(byEndDateAsc);
+    nextDdayTasks.sort(byEndDateAsc);
     return {
       completionRequests: nextCompletionRequests,
       overdue: nextOverdue,
       todayTasks: nextTodayTasks,
+      ddayTasks: nextDdayTasks,
     };
-  }, [data.tasks, today]);
+  }, [data.tasks, today, actor]);
+
+  const taskFocusLabel =
+    taskFocus === 'today'
+      ? '오늘 업무'
+      : taskFocus === 'overdue'
+        ? '지연 업무'
+        : taskFocus === 'dday'
+          ? 'D-day · 7일 이내 마감'
+          : null;
+  const taskFocusTasks = useMemo(() => {
+    if (!taskFocus) return null;
+    const source =
+      taskFocus === 'today'
+        ? todayTasks
+        : taskFocus === 'overdue'
+          ? overdue
+          : ddayTasks.filter((task) => task.status !== 'completed');
+    return source.filter((task) =>
+      `${task.title} ${task.description}`
+        .toLowerCase()
+        .includes(deferredSearch),
+    );
+  }, [taskFocus, todayTasks, overdue, ddayTasks, deferredSearch]);
 
   function updateData(
     updater: (current: WorkspaceState) => WorkspaceState,
@@ -1177,6 +1229,7 @@ export default function WorkCalendarApp({
       void refreshPendingRegistrations(true);
     }
     if (next === 'news') void loadAllNews();
+    if (next !== 'tasks') setTaskFocus(null);
     if (viewRef.current !== next || modalRef.current) {
       viewRef.current = next;
       modalRef.current = null;
@@ -1185,6 +1238,11 @@ export default function WorkCalendarApp({
       pushAppHistory({ view: next, modal: null });
     }
     setMobileMenu(false);
+  }
+
+  function focusTaskList(focus: 'today' | 'overdue' | 'dday') {
+    setTaskFocus(focus);
+    navigate('tasks');
   }
 
   useEffect(() => {
@@ -1435,10 +1493,12 @@ export default function WorkCalendarApp({
               todayTasks={todayTasks}
               requests={completionRequests}
               overdue={overdue}
+              ddayTasks={ddayTasks}
               isAdmin={isAdmin}
               openTask={openTask}
               setTaskStatus={setTaskStatus}
               navigate={navigate}
+              focusTaskList={focusTaskList}
               openCreateTask={openCreateTask}
             />
           )}
@@ -1458,12 +1518,14 @@ export default function WorkCalendarApp({
           {view === 'tasks' && (
             <TasksView
               data={data}
-              tasks={visibleTasks}
+              tasks={taskFocusTasks ?? visibleTasks}
               statusFilter={statusFilter}
               setStatusFilter={setStatusFilter}
               memberFilter={memberFilter}
               setMemberFilter={setMemberFilter}
               openTask={openTask}
+              focusLabel={taskFocusLabel}
+              clearFocus={() => setTaskFocus(null)}
             />
           )}
           {view === 'routines' && (
@@ -1812,7 +1874,7 @@ function TaskCard({
   openTask: (id: string) => void;
 }) {
   const category = data.categories.find((item) => item.id === task.categoryId);
-  const assignee = data.members.find((member) => member.id === task.assigneeId);
+  const names = assigneeNames(task, data);
   return (
     <button
       onClick={() => openTask(task.id)}
@@ -1842,8 +1904,8 @@ function TaskCard({
           )}
         </span>
         <span className="mt-1 block truncate text-xs text-[#5f6d64]">
-          {formatDate(task.date)} · {assignee?.name ?? '미배정'} ·{' '}
-          {statusLabel[task.status]}
+          {formatDate(task.date)} · {names.length ? names.join(', ') : '미배정'}{' '}
+          · {statusLabel[task.status]}
         </span>
       </span>
       <ChevronRight className="size-4 text-[#9aa49d] transition group-hover:translate-x-0.5" />
@@ -1858,10 +1920,12 @@ function TodayView({
   todayTasks,
   requests,
   overdue,
+  ddayTasks,
   isAdmin,
   openTask,
   setTaskStatus,
   navigate,
+  focusTaskList,
   openCreateTask,
 }: {
   data: WorkspaceState;
@@ -1870,10 +1934,12 @@ function TodayView({
   todayTasks: Task[];
   requests: Task[];
   overdue: Task[];
+  ddayTasks: Task[];
   isAdmin: boolean;
   openTask: (id: string) => void;
   setTaskStatus: (id: string, status: Task['status']) => void;
   navigate: (view: View) => void;
+  focusTaskList: (focus: 'today' | 'overdue' | 'dday') => void;
   openCreateTask: (date?: string) => void;
 }) {
   const today = isoDate();
@@ -1881,64 +1947,69 @@ function TodayView({
   const previousNotes = data.notes.filter(
     (item) => item.date === previousDate && !item.completed,
   );
-  const priorityOrder: Record<Task['priority'], number> = {
-    urgent: 0,
-    normal: 1,
-    low: 2,
-  };
-  const ddayTasks = data.tasks
-    .filter((task) => {
-      const difference = dayDifference(today, task.endDate ?? task.date);
-      return difference >= 0 && difference <= 7;
-    })
-    .sort(
-      (a, b) =>
-        Number(a.status === 'completed') - Number(b.status === 'completed') ||
-        priorityOrder[a.priority] - priorityOrder[b.priority] ||
-        (a.endDate ?? a.date).localeCompare(b.endDate ?? b.date),
-    );
+  const sortedDdayTasks = [...ddayTasks].sort(
+    (a, b) =>
+      Number(a.status === 'completed') - Number(b.status === 'completed') ||
+      (a.endDate ?? a.date).localeCompare(b.endDate ?? b.date),
+  );
   const recentNews = news
     .filter((item) => {
       const age = dayDifference(item.collectedAt, isoDate());
       return age >= 0 && age <= 2;
     })
     .sort((a, b) => b.collectedAt.localeCompare(a.collectedAt));
+  const metrics: {
+    label: string;
+    value: number;
+    note: string;
+    onClick: () => void;
+  }[] = [
+    {
+      label: '오늘 업무',
+      value: todayTasks.length,
+      note: '오늘 진행할 업무',
+      onClick: () => focusTaskList('today'),
+    },
+    {
+      label: '완료 요청',
+      value: requests.length,
+      note: '관리자 확인 필요',
+      onClick: () => navigate('notifications'),
+    },
+    {
+      label: '지연 업무',
+      value: overdue.length,
+      note: '마감일 경과',
+      onClick: () => focusTaskList('overdue'),
+    },
+    {
+      label: 'D-day 업무',
+      value: ddayTasks.filter((task) => task.status !== 'completed').length,
+      note: '7일 이내 마감',
+      onClick: () => focusTaskList('dday'),
+    },
+  ];
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        {[
-          ['오늘 업무', String(todayTasks.length), '오늘 진행할 업무'],
-          ['완료 요청', String(requests.length), '관리자 확인 필요'],
-          ['지연 업무', String(overdue.length), '마감일 경과'],
-          [
-            'D-day 업무',
-            String(
-              ddayTasks.filter((task) => task.status !== 'completed').length,
-            ),
-            '7일 이내 마감',
-          ],
-        ].map(([label, value, noteText], index) => (
+        {metrics.map((metric, index) => (
           <button
-            key={label}
-            onClick={() =>
-              navigate(
-                index === 1
-                  ? 'notifications'
-                  : index === 2
-                    ? 'tasks'
-                    : 'calendar',
-              )
-            }
+            key={metric.label}
+            onClick={metric.onClick}
             className="rounded-2xl border border-[#d8ded4] bg-[#fbfaf5] p-4 text-left shadow-[0_7px_22px_rgba(55,74,62,0.05)] transition hover:-translate-y-0.5"
           >
             <div className="flex items-start justify-between">
-              <p className="text-xs font-bold text-[#56645b]">{label}</p>
+              <p className="text-xs font-bold text-[#56645b]">
+                {metric.label}
+              </p>
               {index === 1 && (
                 <CheckCircle2 className="size-4 text-[#2f6b4f]" />
               )}
             </div>
-            <strong className="mt-2 block text-2xl font-black">{value}</strong>
-            <p className="mt-1 text-xs text-[#5f6d64]">{noteText}</p>
+            <strong className="mt-2 block text-2xl font-black">
+              {metric.value}
+            </strong>
+            <p className="mt-1 text-xs text-[#5f6d64]">{metric.note}</p>
           </button>
         ))}
       </div>
@@ -1949,7 +2020,7 @@ function TodayView({
               <div>
                 <h3 className="font-black">{actor.name}님의 오늘 업무</h3>
                 <p className="text-xs text-[#5f6d64]">
-                  기간 업무는 시작일부터 종료일까지 표시됩니다.
+                  마감일이 지나지 않은 모든 업무를 마감 임박순으로 표시합니다.
                 </p>
               </div>
               <Button variant="outline" onClick={() => openCreateTask()}>
@@ -1969,7 +2040,7 @@ function TodayView({
                 ))
               ) : (
                 <Empty
-                  title="오늘 예정된 업무가 없습니다."
+                  title="진행 중인 업무가 없습니다."
                   action="업무 추가"
                   onClick={() => openCreateTask()}
                 />
@@ -1980,12 +2051,12 @@ function TodayView({
             <div className="mb-4">
               <h3 className="font-black">D-day · 7일 이내 마감</h3>
               <p className="text-xs text-[#748078]">
-                긴급 → 보통 → 낮음 순서이며, 완료 업무는 아래로 이동합니다.
+                날짜가 임박한 순서이며, 완료 업무는 아래로 이동합니다.
               </p>
             </div>
             <div className="space-y-2">
-              {ddayTasks.length ? (
-                ddayTasks.map((task) => (
+              {sortedDdayTasks.length ? (
+                sortedDdayTasks.map((task) => (
                   <div
                     key={task.id}
                     className={`flex items-center gap-3 rounded-2xl border border-[#dbe0d9] bg-white p-3 ${task.status === 'completed' ? 'opacity-55' : ''}`}
@@ -2503,6 +2574,8 @@ function TasksView({
   memberFilter,
   setMemberFilter,
   openTask,
+  focusLabel,
+  clearFocus,
 }: {
   data: WorkspaceState;
   tasks: Task[];
@@ -2511,44 +2584,62 @@ function TasksView({
   memberFilter: string;
   setMemberFilter: (value: string) => void;
   openTask: (id: string) => void;
+  focusLabel: string | null;
+  clearFocus: () => void;
 }) {
   return (
     <section className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-4 sm:p-5">
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row">
-        <label className="flex items-center gap-2 text-sm font-bold">
-          <ListFilter className="size-4" />
+      {focusLabel ? (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[#e3eee7] px-4 py-3">
+          <p className="text-sm font-bold text-[#245b43]">
+            {focusLabel} · {tasks.length}건 보는 중
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            className="h-9 rounded-lg bg-white"
+            onClick={clearFocus}
+          >
+            전체 업무 보기
+          </Button>
+        </div>
+      ) : (
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row">
+          <label className="flex items-center gap-2 text-sm font-bold">
+            <ListFilter className="size-4" />
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+              className={inputClass}
+            >
+              <option value="all">모든 상태</option>
+              {Object.entries(statusLabel).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
           <select
-            value={statusFilter}
-            onChange={(event) => setStatusFilter(event.target.value)}
+            aria-label="담당자 필터"
+            value={memberFilter}
+            onChange={(event) => setMemberFilter(event.target.value)}
             className={inputClass}
           >
-            <option value="all">모든 상태</option>
-            {Object.entries(statusLabel).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
+            <option value="all">모든 담당자</option>
+            {data.members
+              .filter((member) => member.active)
+              .map((member) => (
+                <option key={member.id} value={member.id}>
+                  {member.name}
+                </option>
+              ))}
           </select>
-        </label>
-        <select
-          aria-label="담당자 필터"
-          value={memberFilter}
-          onChange={(event) => setMemberFilter(event.target.value)}
-          className={inputClass}
-        >
-          <option value="all">모든 담당자</option>
-          {data.members
-            .filter((member) => member.active)
-            .map((member) => (
-              <option key={member.id} value={member.id}>
-                {member.name}
-              </option>
-            ))}
-        </select>
-      </div>
+        </div>
+      )}
       <div className="space-y-2">
         {tasks.length ? (
-          tasks
+          [...tasks]
             .sort((a, b) => a.date.localeCompare(b.date))
             .map((task) => (
               <TaskCard
@@ -3104,7 +3195,9 @@ function TeamView({
         .map((member) => {
           const assigned = data.tasks.filter(
             (task) =>
-              task.assigneeId === member.id && task.status !== 'completed',
+              (task.assigneeId === member.id ||
+                task.collaborators.includes(member.id)) &&
+              task.status !== 'completed',
           );
           const requests = assigned.filter(
             (task) => task.status === 'completion_requested',
@@ -3332,11 +3425,17 @@ function LegacySettingsView({
         members: current.members.map((item) =>
           item.id === member.id ? { ...item, active: false } : item,
         ),
-        tasks: current.tasks.map((task) =>
-          task.assigneeId === member.id && task.status !== 'completed'
-            ? { ...task, assigneeId: admin.id }
-            : task,
-        ),
+        tasks: current.tasks.map((task) => {
+          const collaborators = task.collaborators.filter(
+            (id) => id !== member.id,
+          );
+          if (task.assigneeId === member.id && task.status !== 'completed') {
+            return { ...task, assigneeId: admin.id, collaborators };
+          }
+          return collaborators.length === task.collaborators.length
+            ? task
+            : { ...task, collaborators };
+        }),
         routines: current.routines.map((routine) =>
           routine.assigneeId === member.id
             ? { ...routine, assigneeId: admin.id }
@@ -3767,7 +3866,7 @@ function DataTransferPanel({
           task.endDate ?? task.date,
           data.categories.find((item) => item.id === task.categoryId)?.name ??
             '',
-          data.members.find((item) => item.id === task.assigneeId)?.name ?? '',
+          assigneeNames(task, data).join(', '),
           statusLabel[task.status],
           priorityLabel[task.priority],
           task.checklist.filter((item) => item.done).length,
@@ -4261,11 +4360,7 @@ function NotificationsView({
               >
                 <strong className="block truncate text-sm">{task.title}</strong>
                 <span className="text-xs text-[#748078]">
-                  {formatDate(task.date)} ·{' '}
-                  {
-                    data.members.find((member) => member.id === task.assigneeId)
-                      ?.name
-                  }
+                  {formatDate(task.date)} · {assigneeNames(task, data).join(', ')}
                 </span>
               </button>
               {isAdmin && (
@@ -4352,6 +4447,40 @@ function ModalShell({
   );
 }
 
+function CollaboratorsField({
+  data,
+  defaultSelected,
+}: {
+  data: WorkspaceState;
+  defaultSelected: string[];
+}) {
+  const options = data.members.filter(
+    (member) => member.active && member.role !== 'commenter',
+  );
+  if (!options.length) return null;
+  return (
+    <Field label="추가 담당자 (복수 선택 가능)">
+      <div className="flex flex-wrap gap-2">
+        {options.map((member) => (
+          <label
+            key={member.id}
+            className="inline-flex items-center gap-1.5 rounded-full border border-[#d8ded4] bg-white px-3 py-1.5 text-xs font-bold transition has-[:checked]:border-[#2f6b4f] has-[:checked]:bg-[#e3eee7] has-[:checked]:text-[#245b43]"
+          >
+            <input
+              type="checkbox"
+              name="collaborators"
+              value={member.id}
+              defaultChecked={defaultSelected.includes(member.id)}
+              className="size-3.5 accent-[#2f6b4f]"
+            />
+            {member.name}
+          </label>
+        ))}
+      </div>
+    </Field>
+  );
+}
+
 function TaskForm({
   data,
   actor,
@@ -4380,6 +4509,10 @@ function TaskForm({
       .map((text) => text.trim())
       .filter(Boolean)
       .map((text) => ({ id: uid('check'), text, done: false }));
+    const primaryAssignee = formText(form, 'assignee');
+    const collaborators = [
+      ...new Set(form.getAll('collaborators').map(String)),
+    ].filter((id) => id !== primaryAssignee);
     save({
       id: uid('task'),
       title: formText(form, 'title'),
@@ -4387,8 +4520,8 @@ function TaskForm({
       date: startDate,
       endDate,
       categoryId: formText(form, 'category'),
-      assigneeId: formText(form, 'assignee'),
-      collaborators: [],
+      assigneeId: primaryAssignee,
+      collaborators,
       priority: formText(form, 'priority') as Task['priority'],
       status: 'scheduled',
       type: formText(form, 'type') as Task['type'],
@@ -4458,6 +4591,7 @@ function TaskForm({
             </select>
           </Field>
         </div>
+        <CollaboratorsField data={data} defaultSelected={[]} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="유형">
             <select name="type" className={inputClass}>
@@ -5139,6 +5273,10 @@ function EditTaskForm({
           ? oldChecklist[index]
           : { id: uid('check'), text, done: false },
       );
+    const primaryAssignee = formText(form, 'assignee');
+    const collaborators = [
+      ...new Set(form.getAll('collaborators').map(String)),
+    ].filter((id) => id !== primaryAssignee);
     save({
       ...task,
       title: formText(form, 'title'),
@@ -5146,7 +5284,8 @@ function EditTaskForm({
       date: startDate,
       endDate,
       categoryId: formText(form, 'category'),
-      assigneeId: formText(form, 'assignee'),
+      assigneeId: primaryAssignee,
+      collaborators,
       priority: formText(form, 'priority') as Task['priority'],
       type: formText(form, 'type') as Task['type'],
       checklist,
@@ -5219,6 +5358,7 @@ function EditTaskForm({
             </select>
           </Field>
         </div>
+        <CollaboratorsField data={data} defaultSelected={task.collaborators} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="유형">
             <select name="type" className={inputClass} defaultValue={task.type}>
@@ -5359,7 +5499,7 @@ function TaskDetail({
 }) {
   const [comment, setComment] = useState('');
   const category = data.categories.find((item) => item.id === task.categoryId);
-  const assignee = data.members.find((member) => member.id === task.assigneeId);
+  const names = assigneeNames(task, data);
   function submitComment(event: FormSubmitEvent) {
     event.preventDefault();
     if (!comment.trim()) return;
@@ -5369,7 +5509,7 @@ function TaskDetail({
   return (
     <ModalShell
       title={task.title}
-      description={`${formatDate(task.date)}${task.endDate ? ` ~ ${formatDate(task.endDate)}` : ''} · ${category?.name} · ${assignee?.name}`}
+      description={`${formatDate(task.date)}${task.endDate ? ` ~ ${formatDate(task.endDate)}` : ''} · ${category?.name} · ${names.join(', ') || '미배정'}`}
       close={close}
     >
       <div className="space-y-5">
