@@ -3024,26 +3024,24 @@ function WeekCalendarGrid({
                     style={{ top: `${index * WEEK_GRID_HOUR_HEIGHT}px` }}
                   />
                 ))}
-                <button
-                  type="button"
-                  aria-label={`${formatDate(date)} 시간대 업무 추가`}
-                  onClick={(event) => {
-                    const bounds = event.currentTarget.getBoundingClientRect();
-                    const slot = clamp(
-                      Math.floor(
-                        ((event.clientY - bounds.top) / WEEK_GRID_HOUR_HEIGHT) *
-                          2,
-                      ),
-                      0,
-                      hours.length * 2 - 1,
-                    );
-                    openCreateTask(
-                      date,
-                      minutesToTime(WEEK_GRID_START_HOUR * 60 + slot * 30),
-                    );
-                  }}
-                  className="absolute inset-0 z-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#2f6b4f]"
-                />
+                {hours.map((hour, index) => (
+                  <button
+                    key={hour}
+                    type="button"
+                    aria-label={`${formatDate(date)} ${formatClockTime(minutesToTime(hour * 60))} 시간대 업무 추가`}
+                    onClick={(event) => {
+                      const bounds = event.currentTarget.getBoundingClientRect();
+                      const minute =
+                        event.clientY - bounds.top >= bounds.height / 2 ? 30 : 0;
+                      openCreateTask(date, minutesToTime(hour * 60 + minute));
+                    }}
+                    className="absolute inset-x-0 z-0 cursor-pointer hover:bg-[#edf4ef]/60 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#2f6b4f]"
+                    style={{
+                      top: `${index * WEEK_GRID_HOUR_HEIGHT}px`,
+                      height: `${WEEK_GRID_HOUR_HEIGHT}px`,
+                    }}
+                  />
+                ))}
                 {isToday &&
                   nowMinutes >= WEEK_GRID_START_HOUR * 60 &&
                   nowMinutes <= WEEK_GRID_END_HOUR * 60 && (
@@ -5108,14 +5106,14 @@ function CollaboratorsField({
 }
 
 type TimePickerParts = {
-  period: '' | 'am' | 'pm';
+  period: 'am' | 'pm';
   hour: string;
   minute: string;
 };
 
 function timePickerParts(value: string): TimePickerParts {
   if (!/^\d{2}:(00|30)$/.test(value)) {
-    return { period: '', hour: '', minute: '' };
+    return { period: 'am', hour: '', minute: '' };
   }
   const [hourText, minute] = value.split(':');
   const hour = Number(hourText);
@@ -5127,7 +5125,7 @@ function timePickerParts(value: string): TimePickerParts {
 }
 
 function timeFromPickerParts({ period, hour, minute }: TimePickerParts) {
-  if (!period || !hour || !minute) return '';
+  if (!hour || !minute) return '';
   const hour24 = (Number(hour) % 12) + (period === 'pm' ? 12 : 0);
   return `${String(hour24).padStart(2, '0')}:${minute}`;
 }
@@ -5154,7 +5152,7 @@ function TimePicker({
   }
 
   function clearTime() {
-    setParts({ period: '', hour: '', minute: '' });
+    setParts({ period: 'am', hour: '', minute: '' });
     onChange('');
   }
 
@@ -5168,7 +5166,6 @@ function TimePicker({
           onChange={(event) => updatePart('period', event.target.value)}
           className="h-9 min-w-0 rounded-lg border border-[#d8ded4] bg-white px-2 text-sm font-bold outline-none focus:border-[#2f6b4f] focus:ring-2 focus:ring-[#2f6b4f]/10"
         >
-          <option value="">오전/오후</option>
           <option value="am">오전</option>
           <option value="pm">오후</option>
         </select>
