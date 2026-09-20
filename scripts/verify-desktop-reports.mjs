@@ -68,37 +68,35 @@ try {
     .getAttribute('srcdoc');
   // Also exercise Electron's PDF renderer with exactly the preview document.
   const pdfPath = path.join(output, 'desktop-report-verification.pdf');
-  result.pdf = await app.evaluate(
-    async ({ BrowserWindow }, { html, pdfPath }) => {
-      const fs = await import('node:fs/promises');
-      const win = new BrowserWindow({
-        show: false,
-        webPreferences: {
-          sandbox: true,
-          nodeIntegration: false,
-          contextIsolation: true,
-        },
+  const pdfBytes = await app.evaluate(async ({ BrowserWindow }, html) => {
+    const win = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        sandbox: true,
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
+    try {
+      await win.loadURL(
+        'data:text/html;charset=utf-8,' + encodeURIComponent(html),
+      );
+      const pdf = await win.webContents.printToPDF({
+        landscape: true,
+        printBackground: true,
+        preferCSSPageSize: true,
       });
-      try {
-        await win.loadURL(
-          'data:text/html;charset=utf-8,' + encodeURIComponent(html),
-        );
-        const pdf = await win.webContents.printToPDF({
-          landscape: true,
-          printBackground: true,
-          preferCSSPageSize: true,
-        });
-        await fs.writeFile(pdfPath, pdf);
-        return {
-          bytes: pdf.length,
-          validHeader: pdf.subarray(0, 5).toString() === '%PDF-',
-        };
-      } finally {
-        win.destroy();
-      }
-    },
-    { html, pdfPath },
-  );
+      return Array.from(pdf);
+    } finally {
+      win.destroy();
+    }
+  }, html);
+  const pdfBuffer = Buffer.from(pdfBytes);
+  await fs.writeFile(pdfPath, pdfBuffer);
+  result.pdf = {
+    bytes: pdfBuffer.length,
+    validHeader: pdfBuffer.subarray(0, 5).toString() === '%PDF-',
+  };
   assert.equal(result.pdf.validHeader, true);
   assert.ok(result.pdf.bytes > 1000);
   await page.screenshot({
@@ -126,7 +124,9 @@ try {
       });
     });
   }, excelPath);
-  await page.getByRole('button', { name: 'Excel', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Excel 다운로드', exact: true })
+    .click();
   result.excel = await app.evaluate(() => globalThis.__reportDownload);
   const ExcelModule = await import('exceljs');
   const ExcelJS = ExcelModule.default ?? ExcelModule;
