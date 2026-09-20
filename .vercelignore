@@ -7,3 +7,15 @@ desktop-dist
 .env.*.local
 vercel-upload-*
 *.zip
+android
+android-dist
+desktop
+desktop-stage
+resources
+.reports-tools
+.env*
+!.env.example
+*.lnk
+*.tsbuildinfo
+test-results
+playwright-report

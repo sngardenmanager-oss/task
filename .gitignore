@@ -41,9 +41,13 @@ next-env.d.ts
 /work/
 /desktop-dist/
 /desktop-stage/
+/android-dist/
 /mobile-qa.png
 /supabase/.temp/
 
 .vercel
 .env*
 !.env.example
+
+# Temporary reporting migration tooling
+.reports-tools/

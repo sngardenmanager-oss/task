@@ -1,0 +1,126 @@
+import type { NewsItem, TaskStatus } from './types';
+
+export type ReportRow = {
+  id: string;
+  taskId?: string;
+  noteId?: string;
+  sourceRoutineId?: string;
+  section: 'before' | 'after';
+  category: string;
+  title: string;
+  summary: string;
+  nextAction: string;
+  assignee: string;
+  date: string;
+  status: string;
+  completedAt?: string;
+  sourceChanged?: string;
+  sourceFingerprint?: string;
+  visible: boolean;
+  closed: boolean;
+  closeNote: string;
+  previousPromise?: string;
+  followup: string;
+  delayReason: string;
+  checklist: { id: string; text: string; done: boolean }[];
+};
+export type ReportAgenda = {
+  id: string;
+  kind: '단순 보고' | '결정 요청' | '지시 후속';
+  title: string;
+  situation: string;
+  options: string;
+  opinion: string;
+  dueDate: string;
+  decision: string;
+  assigneeId: string;
+  taskId?: string;
+  visible: boolean;
+};
+export type ReportConfig = {
+  title: string;
+  meetingDate: string;
+  cutoff: string;
+  actualStart: string;
+  actualEnd: string;
+  planStart: string;
+  planEnd: string;
+  statsStart: string;
+  statsEnd: string;
+  scope: 'mine' | 'team';
+  team: string;
+  author: string;
+  attendees: string;
+  metricNote: string;
+};
+export type ReportMetric = {
+  label: string;
+  current: number | null;
+  previous: number | null;
+  change: number | null;
+  unit: string;
+  comparison: string;
+  missing: number;
+  previousMissing: number;
+};
+export type Statistic = {
+  date: string;
+  revenue: number | null;
+  visitors: number | null;
+  groups: number | null;
+  foreigners: number | null;
+  foreignGroups: number | null;
+  groupGeneral: number | null;
+  groupLocal: number | null;
+  groupWelfare: number | null;
+  memo: string;
+};
+export type ReportDocument = {
+  id: string;
+  ownerId: string;
+  config: ReportConfig;
+  rows: ReportRow[];
+  agendas: ReportAgenda[];
+  news: NewsItem[];
+  status: 'draft' | 'final';
+  revision: number;
+  originalId?: string;
+  previousId?: string;
+  createdAt: string;
+  updatedAt: string;
+  finalizedAt?: string;
+  metrics: ReportMetric[];
+  statistics: Statistic[];
+  comparisonStart: string;
+  comparisonEnd: string;
+  templateVersion: 1;
+};
+export type ReportTrack = {
+  id: string;
+  row: ReportRow;
+  scopeKey: string;
+  closed: boolean;
+  history: { at: string; actor: string; closed: boolean; note: string }[];
+};
+export type StatisticImport = {
+  id: string;
+  filename: string;
+  at: string;
+  actor: string;
+  before: (Statistic | null)[];
+  after: Statistic[];
+  undoneAt?: string;
+};
+export type ReportStore = {
+  reports: ReportDocument[];
+  tracks: ReportTrack[];
+  statistics: Statistic[];
+  imports: StatisticImport[];
+  archiveLinks: Record<string, string>;
+};
+export type TaskStatusHistory = {
+  at: string;
+  actorId: string;
+  from: TaskStatus;
+  to: TaskStatus;
+};

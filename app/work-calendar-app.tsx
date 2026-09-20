@@ -46,6 +46,7 @@ import {
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import ReportsView from '@/app/reports-view';
 import type {
   Category,
   Comment,
@@ -68,6 +69,7 @@ type View =
   | 'notes'
   | 'team'
   | 'news'
+  | 'reports'
   | 'settings'
   | 'notifications';
 type Modal =
@@ -142,6 +144,11 @@ const viewMeta: Record<
     label: '관광뉴스',
     icon: Newspaper,
     subtitle: '최근 3일 이내 관광 관련 문서를 모아봅니다.',
+  },
+  reports: {
+    label: '보고서',
+    icon: FileText,
+    subtitle: '주간회의 자료와 경영 지표를 모아 보고서를 작성합니다.',
   },
   settings: {
     label: '설정',
@@ -1030,7 +1037,7 @@ export default function WorkCalendarApp({
       (current) => ({
         ...current,
         tasks: current.tasks.map((task) =>
-          task.id === taskId ? { ...task, status } : task,
+          task.id === taskId ? { ...task, status, completedAt: status === 'completed' ? new Date().toISOString() : undefined, statusHistory: task.status === status ? task.statusHistory : [...(task.statusHistory ?? []), { at: new Date().toISOString(), actorId: actor.id, from: task.status, to: status }] } : task,
         ),
       }),
       status === 'completed'
@@ -1730,6 +1737,7 @@ export default function WorkCalendarApp({
               onDelete={deleteNewsItem}
             />
           )}
+          <ReportsView active={view === 'reports'} data={data} actor={actor} accessToken={accessToken} news={newsItems} updateData={updateData} openTask={openTask} />
           {view === 'settings' && (
             <SettingsView
               data={data}
@@ -1966,6 +1974,7 @@ function SidebarContent({
     'notes',
     'team',
     'news',
+    'reports',
   ];
   return (
     <>
@@ -3308,6 +3317,7 @@ function RoutinesView({
       priority: 'normal',
       status: 'scheduled',
       type: 'routine',
+      sourceRoutineId: routine.id,
       checklist: routineChecklistWithLinks(routine).map((text) => ({
         id: uid('check'),
         text,

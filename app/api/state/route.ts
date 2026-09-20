@@ -93,6 +93,9 @@ function validateUpdate(
   }
   for (const task of after.tasks) {
     const previous = before.tasks.find((item) => item.id === task.id);
+    if (previous && previous.status === task.status && previous.completedAt !== task.completedAt) {
+      throw new ApiError('실제 완료일은 관리자만 확인·변경할 수 있습니다.', 403);
+    }
     if (task.status === 'completed' && previous?.status !== 'completed') {
       throw new ApiError('최종 완료는 관리자만 처리할 수 있습니다.', 403);
     }
@@ -143,6 +146,12 @@ export async function PUT(request: Request) {
     }
     const mergedState = mergeIncomingState(before, incoming.state, deletedIds);
     validateUpdate(before, mergedState, actor);
+    const changedAt = new Date().toISOString();
+    mergedState.tasks = mergedState.tasks.map(task => {
+      const previous = before.tasks.find(item => item.id === task.id);
+      if (!previous || previous.status === task.status) return task;
+      return { ...task, completedAt: task.status === "completed" ? changedAt : undefined, statusHistory: [...(previous.statusHistory ?? []), { at: changedAt, actorId: actor.id, from: previous.status, to: task.status }] };
+    });
     const persisted = await writeWorkspaceState(mergedState);
     return Response.json(
       { ok: true, localOnly: !persisted, actor, state: mergedState },

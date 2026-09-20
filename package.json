@@ -11,7 +11,9 @@
     "test:e2e": "playwright test",
     "start": "next start",
     "desktop:dev": "electron desktop/main.cjs",
-    "desktop:build": "electron-builder --win portable",
+    "desktop:build": "node scripts/build-desktop.mjs",
+    "android:build": "node scripts/build-android.mjs",
+    "android:build:release": "node scripts/build-android.mjs --release",
     "lint": "oxlint",
     "format": "oxfmt",
     "db:generate": "drizzle-kit generate"
@@ -64,6 +66,10 @@
     "vinext": "^1.0.0-beta.9"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
     "@cloudflare/vite-plugin": "1.37.1",
     "@cloudflare/workers-types": "4.20260515.1",
     "@openai/sites-vite-plugin": "0.2.0",

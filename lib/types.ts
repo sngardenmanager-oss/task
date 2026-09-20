@@ -63,6 +63,9 @@ export type Task = {
   checklist: { id: string; text: string; done: boolean }[];
   comments: Comment[];
   sourceNoteId?: string;
+  sourceRoutineId?: string;
+  completedAt?: string;
+  statusHistory?: { at: string; actorId: string; from: TaskStatus; to: TaskStatus }[];
   createdBy: string;
   createdAt: string;
 };
