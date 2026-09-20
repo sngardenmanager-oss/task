@@ -320,14 +320,43 @@ export function reportHtml(report: ReportDocument) {
   );
 }
 export function printReport(report: ReportDocument) {
-  const url = URL.createObjectURL(
-    new Blob([reportHtml(report)], { type: 'text/html;charset=utf-8' }),
+  const previousFocus = document.activeElement;
+  const dialog = document.createElement('dialog');
+  dialog.setAttribute('aria-label', '보고서 출력 미리보기');
+  dialog.style.cssText =
+    'width:min(1200px,96vw);max-width:96vw;height:92vh;max-height:92vh;padding:0;border:1px solid #bccbc0;border-radius:12px;background:white;color:#183b2b;overflow:hidden';
+  const toolbar = document.createElement('div');
+  toolbar.style.cssText =
+    'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid #bccbc0;font:14px "Malgun Gothic",sans-serif';
+  const title = document.createElement('strong');
+  title.textContent = '보고서 출력 미리보기';
+  const close = document.createElement('button');
+  close.textContent = '닫기';
+  close.type = 'button';
+  close.style.cssText =
+    'padding:8px 16px;border:1px solid #bccbc0;border-radius:6px;cursor:pointer;background:white;color:#183b2b';
+  close.onclick = () => dialog.close();
+  toolbar.appendChild(title);
+  toolbar.appendChild(close);
+  const frame = document.createElement('iframe');
+  frame.title = '인쇄할 보고서';
+  frame.style.cssText =
+    'width:100%;height:calc(100% - 62px);border:0;background:white';
+  // Keep the printable document in the app. Electron routes new windows to
+  // the external browser, which cannot open this renderer's blob URLs.
+  frame.srcdoc = reportHtml(report);
+  dialog.appendChild(toolbar);
+  dialog.appendChild(frame);
+  dialog.addEventListener(
+    'close',
+    () => {
+      dialog.remove();
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected)
+        previousFocus.focus();
+    },
+    { once: true },
   );
-  const popup = window.open(url, '_blank');
-  if (!popup) {
-    URL.revokeObjectURL(url);
-    throw new Error('미리보기를 열 수 없습니다. 팝업을 허용해 주세요.');
-  }
-  popup.opener = null;
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  document.body.appendChild(dialog);
+  dialog.showModal();
+  close.focus();
 }
