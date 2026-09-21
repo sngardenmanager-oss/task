@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import ReportNewsPicker from './report-news-picker';
+import RatioComposition from './report-composition';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import type { Member, NewsItem, Task, WorkspaceState } from '@/lib/types';
 import type {
@@ -67,6 +68,10 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     </label>
   );
 }
+const ratioNotes: Record<string, string> = {
+  '단체 구성비': '단체 ÷ 전체 · 외국인 단체 포함',
+  '외국인 구성비': '외국인(개인+단체) ÷ 전체 · 외국인 단체 포함',
+};
 function MetricCards({
   report,
   store,
@@ -87,6 +92,9 @@ function MetricCards({
       {metrics.map((m) => (
         <div key={m.label} className={panel}>
           <p className="text-sm text-[#64776a]">{m.label}</p>
+          {ratioNotes[m.label] && (
+            <p className="text-xs text-[#8a968e]">{ratioNotes[m.label]}</p>
+          )}
           <p className="mt-2 text-xl font-bold text-[#245b43]">
             {m.current === null
               ? '자료 없음'
@@ -156,6 +164,7 @@ export default function ReportsView({
   const [error, setError] = useState('');
   const [tab, setTab] = useState('weekly');
   const [showExcluded, setShowExcluded] = useState(false);
+  const [openNotes, setOpenNotes] = useState<string[]>([]);
   const [showClosed, setShowClosed] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [csv, setCsv] = useState<{ text: string; filename: string } | null>(
@@ -488,8 +497,8 @@ export default function ReportsView({
             {readOnly
               ? '확정본 · 수정 ' + report.revision
               : dirty
-                ? '저장하지 않은 변경사항'
-                : '초안'}{' '}
+              ? '저장하지 않은 변경사항'
+              : '초안'}{' '}
             {busy ? '· 저장 중' : ''}
           </p>
         </div>
@@ -620,6 +629,11 @@ export default function ReportsView({
         </Field>
       </fieldset>
       <MetricCards report={report} store={store} />
+      <RatioComposition
+        rows={report.status === 'final' ? report.statistics : store.statistics}
+        start={report.config.statsStart}
+        end={report.config.statsEnd}
+      />
       <Tabs value={tab} onValueChange={(value) => setTab(String(value))}>
         <TabsList className="h-auto w-full flex-wrap justify-start gap-1 bg-[#e3eee7] p-1">
           <TabsTrigger className="min-h-10 px-3" value="weekly">
@@ -1016,12 +1030,12 @@ export default function ReportsView({
             ))}
           </section>
           <section className={panel}>
-            <h3 className="font-bold">특이사항 · 관광 동향 선택</h3>
+            <h3 className="font-bold">특이사항 선택</h3>
             <p className="my-2 text-sm text-[#64776a]">
-              선택한 내용만 보고서에 포함됩니다. 업무로 전환된 특이사항은 해당
-              업무와 연결합니다.
+              선택한 내용만 보고서에 포함됩니다. 제목을 누르면 내용을 펼쳐 볼 수
+              있고, 업무로 전환된 특이사항은 해당 업무와 연결합니다.
             </p>
-            <div className="grid max-h-80 gap-3 overflow-auto sm:grid-cols-2">
+            <div className="grid max-h-[28rem] gap-2 overflow-auto">
               {data.notes
                 .filter((n) =>
                   report.config.scope === 'mine'
@@ -1032,76 +1046,112 @@ export default function ReportsView({
                       ),
                 )
                 .map((note) => (
-                  <label
+                  <div
                     key={note.id}
-                    className="flex items-start gap-2 text-sm"
+                    className="rounded-lg border border-[#d8ded4] p-2 text-sm"
                   >
-                    <input
-                      type="checkbox"
-                      disabled={readOnly || busy}
-                      checked={report.rows.some(
-                        (r) => r.noteId === note.id && r.visible,
-                      )}
-                      onChange={(e) => {
-                        const existing = report.rows.find(
-                          (r) =>
-                            r.noteId === note.id ||
-                            (!!note.convertedTaskId &&
-                              r.taskId === note.convertedTaskId),
-                        );
-                        if (existing) {
-                          rowEdit(existing.id, {
-                            noteId: note.id,
-                            visible: e.target.checked,
-                          });
-                          return;
+                    <div className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        aria-label={note.label + ' 보고서에 포함'}
+                        className="mt-1"
+                        disabled={readOnly || busy}
+                        checked={report.rows.some(
+                          (r) => r.noteId === note.id && r.visible,
+                        )}
+                        onChange={(e) => {
+                          const existing = report.rows.find(
+                            (r) =>
+                              r.noteId === note.id ||
+                              (!!note.convertedTaskId &&
+                                r.taskId === note.convertedTaskId),
+                          );
+                          if (existing) {
+                            rowEdit(existing.id, {
+                              noteId: note.id,
+                              visible: e.target.checked,
+                            });
+                            return;
+                          }
+                          if (e.target.checked)
+                            edit({
+                              rows: [
+                                ...report.rows,
+                                {
+                                  ...manualRow(
+                                    note.date < report.config.cutoff
+                                      ? 'before'
+                                      : 'after',
+                                  ),
+                                  id: 'note:' + note.id,
+                                  noteId: note.id,
+                                  taskId: note.convertedTaskId,
+                                  title: note.label,
+                                  summary: note.body,
+                                  date: note.date,
+                                  category: '특이사항',
+                                  assignee:
+                                    data.members.find(
+                                      (m) => m.id === note.createdBy,
+                                    )?.name ?? '',
+                                  status: note.completed
+                                    ? '최종 완료'
+                                    : '대응 중',
+                                  completedAt: note.completedAt,
+                                },
+                              ],
+                            });
+                        }}
+                      />
+                      <button
+                        type="button"
+                        aria-expanded={openNotes.includes(note.id)}
+                        className="min-w-0 flex-1 text-left"
+                        onClick={() =>
+                          setOpenNotes((current) =>
+                            current.includes(note.id)
+                              ? current.filter((id) => id !== note.id)
+                              : [...current, note.id],
+                          )
                         }
-                        if (e.target.checked)
-                          edit({
-                            rows: [
-                              ...report.rows,
-                              {
-                                ...manualRow(
-                                  note.date < report.config.cutoff
-                                    ? 'before'
-                                    : 'after',
-                                ),
-                                id: 'note:' + note.id,
-                                noteId: note.id,
-                                taskId: note.convertedTaskId,
-                                title: note.label,
-                                summary: note.body,
-                                date: note.date,
-                                category: '특이사항',
-                                assignee:
-                                  data.members.find(
-                                    (m) => m.id === note.createdBy,
-                                  )?.name ?? '',
-                                status: note.completed
-                                  ? '최종 완료'
-                                  : '대응 중',
-                                completedAt: note.completedAt,
-                              },
-                            ],
-                          });
-                      }}
-                    />
-                    <span>
-                      {note.date} · {note.label}
-                    </span>
-                  </label>
+                      >
+                        <span className="font-medium">
+                          {note.date} · {note.label}
+                        </span>
+                        <span className="ml-2 text-xs text-[#2f6b4f]">
+                          {openNotes.includes(note.id)
+                            ? '접기 ▲'
+                            : '내용 보기 ▼'}
+                        </span>
+                      </button>
+                    </div>
+                    {openNotes.includes(note.id) && (
+                      <div className="mt-2 rounded-md bg-[#f6faf7] p-3 text-sm whitespace-pre-wrap">
+                        {note.location && (
+                          <p className="mb-1 text-xs text-[#64776a]">
+                            위치: {note.location}
+                          </p>
+                        )}
+                        {note.body || '작성된 내용이 없습니다.'}
+                      </div>
+                    )}
+                  </div>
                 ))}
             </div>
-            <div className="mt-4 border-t border-[#d8ded4] pt-4">
-              <h4 className="mb-2 text-sm font-bold">관광 동향 뉴스</h4>
-              <ReportNewsPicker
-                news={news}
-                selected={report.news}
-                disabled={readOnly || busy}
-                onOpen={onLoadNews}
-                onChange={(next) => edit({ news: next })}
-              />
-            </div>
+          </section>
+          <section className={panel}>
+            <h3 className="font-bold">관광 동향 선택</h3>
+            <p className="my-2 text-sm text-[#64776a]">
+              키워드별 뉴스에서 고르고, 뉴스마다 긍정·부정으로 보고서에
+              표시합니다.
+            </p>
+            <ReportNewsPicker
+              news={news}
+              selected={report.news}
+              disabled={readOnly || busy}
+              onOpen={onLoadNews}
+              onChange={(next) => edit({ news: next })}
+            />
           </section>
         </TabsContent>
         <TabsContent value="followup" className="space-y-3 pt-3">
@@ -1742,10 +1792,10 @@ function ReportRowEditor({
   const bucket = !row.date
     ? '일정 미정'
     : row.date <= config.planEnd
-      ? '이번 주'
-      : row.date <= shiftDay(config.planEnd, 7)
-        ? '다음 주'
-        : '그 이후';
+    ? '이번 주'
+    : row.date <= shiftDay(config.planEnd, 7)
+    ? '다음 주'
+    : '그 이후';
   const actual = completedDay(row.completedAt);
   const highlight =
     actual && actual >= config.actualStart && actual <= config.actualEnd;

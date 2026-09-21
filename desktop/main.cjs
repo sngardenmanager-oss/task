@@ -30,7 +30,11 @@ function getNewsSyncStatePath() {
   return path.join(app.getPath('userData'), 'news-source-sync.json');
 }
 
-function recentKoreaDates(count = 3) {
+// 주간 보고에서 지난주 뉴스를 고를 수 있도록 최근 14일치를 서버로 동기화한다.
+// 뉴스 탭과 홈 화면은 화면에서 최근 3일만 걸러 보여준다.
+const NEWS_SYNC_DAYS = 14;
+
+function recentKoreaDates(count = NEWS_SYNC_DAYS) {
   const koreaNow = Date.now() + KOREA_UTC_OFFSET_MS;
   return new Set(
     Array.from({ length: count }, (_, index) =>
@@ -57,7 +61,7 @@ async function collectRecentNewsItems() {
     return { items: [], snapshotId: '', skipped: false };
   }
   const stat = await fs.promises.stat(dashboardDataPath);
-  const snapshotId = `${appUrl}:${stat.size}:${stat.mtimeMs}`;
+  const snapshotId = `${appUrl}:${NEWS_SYNC_DAYS}d:${stat.size}:${stat.mtimeMs}`;
   if ((await readLastNewsSnapshot()) === snapshotId) {
     return { items: [], snapshotId, skipped: true };
   }

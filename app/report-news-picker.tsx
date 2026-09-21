@@ -169,7 +169,8 @@ export default function ReportNewsPicker({
             <DialogTitle>관광 뉴스 선택</DialogTitle>
             <DialogDescription>
               모든 키워드에서 자유롭게 고를 수 있고, 키워드를 바꿔도 선택은
-              유지됩니다. 선택한 뉴스마다 긍정·부정 표시를 고르세요.
+              유지됩니다. 각 뉴스의 [긍정]·[부정] 버튼을 누르면 그 표시로 바로
+              담깁니다.
             </DialogDescription>
           </DialogHeader>
           <div className="grid min-h-0 flex-1 gap-3 md:grid-cols-[220px_1fr]">
@@ -244,12 +245,14 @@ export default function ReportNewsPicker({
                           </span>
                         </span>
                       </label>
-                      {picked && (
-                        <ToneButtons
-                          tone={picked.tone}
-                          onChange={(tone) => setTone(item.id, tone)}
-                        />
-                      )}
+                      <ToneButtons
+                        tone={picked?.tone}
+                        onChange={(tone) =>
+                          picked
+                            ? setTone(item.id, tone)
+                            : onChange([...selected, { ...item, tone }])
+                        }
+                      />
                     </li>
                   );
                 })}
