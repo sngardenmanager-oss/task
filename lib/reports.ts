@@ -90,6 +90,9 @@ const statusNames = {
   completion_requested: '완료 승인 대기',
   completed: '최종 완료',
 };
+function isRoutineTask(task?: WorkspaceState['tasks'][number]) {
+  return !!task && (task.type === 'routine' || !!task.sourceRoutineId);
+}
 function taskRow(
   task: WorkspaceState['tasks'][number],
   data: WorkspaceState,
@@ -148,12 +151,7 @@ export function collectReportRows(
         closed: false,
       });
   const candidateRows = data.tasks
-    .filter(
-      (t) =>
-        inReportScope(t, data, actor, config) &&
-        (t.date < config.cutoff ||
-          (t.type !== 'routine' && !t.sourceRoutineId)),
-    )
+    .filter((t) => inReportScope(t, data, actor, config) && !isRoutineTask(t))
     .map((t) => taskRow(t, data, config));
   for (const source of candidateRows) {
     const track = savedTracks.find(
@@ -215,7 +213,15 @@ export function collectReportRows(
         last.nextAction ||
         (last.section === 'after' ? last.title : last.previousPromise);
   }
-  return [...result.values()];
+  // Routine work is managed on its own and never enters the weekly report,
+  // including rows an earlier draft or saved track already picked up.
+  return [...result.values()].filter(
+    (row) =>
+      !row.sourceRoutineId &&
+      !(
+        row.taskId && isRoutineTask(data.tasks.find((t) => t.id === row.taskId))
+      ),
+  );
 }
 export function newReport(
   data: WorkspaceState,
@@ -547,8 +553,8 @@ export function previewStatistics(
         value === ''
           ? null
           : /^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(value)
-            ? Number(value.replaceAll(',', ''))
-            : NaN;
+          ? Number(value.replaceAll(',', ''))
+          : NaN;
     });
     for (const error of validateStatistic(next))
       result.errors.push(i + 2 + '행 (' + date + '): ' + error);
@@ -610,8 +616,8 @@ export function calculateMetrics(
       current === null || previous === null || (!ratio && previous === 0)
         ? null
         : ratio
-          ? current - previous
-          : ((current - previous) / previous) * 100;
+        ? current - previous
+        : ((current - previous) / previous) * 100;
     return {
       label,
       current,
@@ -622,12 +628,80 @@ export function calculateMetrics(
         previous === 0 && !ratio
           ? '비교 불가(전년 0)'
           : current === null || previous === null
-            ? '자료 없음 또는 분모 0'
-            : ratio
-              ? '%p'
-              : '%',
+          ? '자료 없음 또는 분모 0'
+          : ratio
+          ? '%p'
+          : '%',
       missing: ratio ? Math.max(a.missing, av.missing) : a.missing,
       previousMissing: ratio ? Math.max(b.missing, bv.missing) : b.missing,
+    };
+  });
+}
+export type CompositionPart = {
+  label: string;
+  // 이 구분이 합산되는 상단 지표. 외국인 단체는 두 지표에 모두 들어간다.
+  belongsTo: string;
+  current: number | null;
+  previous: number | null;
+  currentShare: number | null;
+  previousShare: number | null;
+  shareChange: number | null;
+};
+// 단체 구성비와 외국인 구성비는 외국인 단체를 공통으로 포함한다.
+// 전체 입장객을 겹치지 않는 네 구분으로 나눠 두 비율의 관계를 보여준다.
+export function calculateComposition(
+  rows: Statistic[],
+  start: string,
+  end: string,
+): CompositionPart[] {
+  const ps = previousYear(start),
+    pe = previousYear(end);
+  const counts = (from: string, to: string) => {
+    const t = (key: 'visitors' | 'groups' | 'foreigners' | 'foreignGroups') =>
+      periodTotal(rows, from, to, key).value;
+    const visitors = t('visitors'),
+      groups = t('groups'),
+      foreigners = t('foreigners'),
+      foreignGroups = t('foreignGroups');
+    if (
+      visitors === null ||
+      groups === null ||
+      foreigners === null ||
+      foreignGroups === null
+    )
+      return null;
+    const parts = [
+      visitors - groups - (foreigners - foreignGroups),
+      groups - foreignGroups,
+      foreigners - foreignGroups,
+      foreignGroups,
+    ];
+    // 부분집합이 전체보다 큰 자료는 구성비로 보여주지 않는다.
+    return parts.some((v) => v < 0) ? null : { visitors, parts };
+  };
+  const a = counts(start, end),
+    b = counts(ps, pe);
+  const share = (c: typeof a, i: number) =>
+    c && c.visitors > 0 ? (c.parts[i] / c.visitors) * 100 : null;
+  return [
+    ['내국인 개인', '어느 지표에도 포함 안 됨'],
+    ['내국인 단체', '단체 구성비'],
+    ['외국인 개인', '외국인 구성비'],
+    ['외국인 단체', '단체 구성비 + 외국인 구성비'],
+  ].map(([label, belongsTo], i) => {
+    const currentShare = share(a, i),
+      previousShare = share(b, i);
+    return {
+      label,
+      belongsTo,
+      current: a ? a.parts[i] : null,
+      previous: b ? b.parts[i] : null,
+      currentShare,
+      previousShare,
+      shareChange:
+        currentShare === null || previousShare === null
+          ? null
+          : currentShare - previousShare,
     };
   });
 }

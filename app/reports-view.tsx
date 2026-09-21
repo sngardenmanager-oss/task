@@ -18,6 +18,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import ReportNewsPicker from './report-news-picker';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import type { Member, NewsItem, Task, WorkspaceState } from '@/lib/types';
 import type {
@@ -129,6 +130,7 @@ export default function ReportsView({
   actor,
   accessToken,
   news,
+  onLoadNews,
   updateData,
   openTask,
 }: {
@@ -137,6 +139,7 @@ export default function ReportsView({
   actor: Member;
   accessToken: string;
   news: NewsItem[];
+  onLoadNews: () => void;
   updateData: (
     fn: (current: WorkspaceState) => WorkspaceState,
     message?: string,
@@ -1088,28 +1091,16 @@ export default function ReportsView({
                     </span>
                   </label>
                 ))}
-              {news.map((item) => (
-                <label key={item.id} className="flex items-start gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    disabled={readOnly || busy}
-                    checked={report.news.some((n) => n.id === item.id)}
-                    onChange={(e) =>
-                      edit({
-                        news: e.target.checked
-                          ? [...report.news, item]
-                          : report.news.filter((n) => n.id !== item.id),
-                      })
-                    }
-                  />
-                  <span>
-                    {item.title}
-                    <span className="block text-xs text-[#64776a]">
-                      {item.source} · {item.collectedAt}
-                    </span>
-                  </span>
-                </label>
-              ))}
+            </div>
+            <div className="mt-4 border-t border-[#d8ded4] pt-4">
+              <h4 className="mb-2 text-sm font-bold">관광 동향 뉴스</h4>
+              <ReportNewsPicker
+                news={news}
+                selected={report.news}
+                disabled={readOnly || busy}
+                onOpen={onLoadNews}
+                onChange={(next) => edit({ news: next })}
+              />
             </div>
           </section>
         </TabsContent>

@@ -90,6 +90,21 @@ await test('initial import includes all past completed tasks and distant nonrout
   );
   assert.equal(r.rows[0].completedAt, undefined);
 });
+await test('routine tasks, including past ones, never enter the report', () => {
+  const withPast = {
+    ...data,
+    tasks: [
+      ...data.tasks,
+      task('pastRoutine', '2020-02-02', { type: 'routine' }),
+      task('pastDerived', '2020-02-03', { sourceRoutineId: 'r' }),
+    ],
+  };
+  const r = core.newReport(withPast, actor, config, core.emptyReportStore());
+  assert.ok(!r.rows.some((x) => /outine|Derived/.test(x.taskId)));
+  const stale = { ...r.rows[0], id: 'stale', taskId: undefined, sourceRoutineId: 'r' };
+  const refreshed = core.collectReportRows(withPast, actor, config, [], [stale]);
+  assert.ok(!refreshed.some((x) => x.id === 'stale'));
+});
 await test('hidden unfinished rows reappear next week, closed rows do not', () => {
   let store = core.emptyReportStore();
   const r = core.newReport(data, actor, config, store);
@@ -306,6 +321,56 @@ await test('every export excludes hidden report rows and HTML escapes user conte
   assert.ok(!html.includes('SECRET_HIDDEN'));
 });
 
+await test('report output: slim 이전진행 columns, news tone and comma numbers', () => {
+  const r = core.finalizeReport(
+    core.newReport(data, actor, config, core.emptyReportStore()),
+    [
+      {
+        date: config.statsStart,
+        revenue: 1234567,
+        visitors: 1000,
+        groups: null,
+        foreigners: null,
+        foreignGroups: null,
+        groupGeneral: null,
+        groupLocal: null,
+        groupWelfare: null,
+        memo: '',
+      },
+    ],
+  );
+  r.news = [
+    { id: 'p', title: 'good', category: 'k', source: 's', collectedAt: '2026-09-01', tone: 'positive' },
+    { id: 'n', title: 'bad', category: 'k', source: 's', collectedAt: '2026-09-01', tone: 'negative' },
+  ];
+  const tables = exporter.reportTables(r);
+  const before = tables.find((t) => t.name === '이전진행');
+  for (const gone of ['다음 행동', '담당자', '보고 상태', '결과 메모'])
+    assert.ok(!before.headers.includes(gone), gone);
+  const labels = tables[0].rows.map((x) => x[0]);
+  assert.ok(labels.includes('관광 동향 · 긍정') && labels.includes('관광 동향 · 부정'));
+  const html = exporter.reportHtml(r);
+  assert.ok(html.includes('1,234,567'));
+  assert.ok(html.includes('관광 동향 · 부정'));
+});
+await test('composition splits visitors into four non-overlapping parts', () => {
+  const row = (date, extra) => ({
+    date, revenue: null, visitors: 100, groups: 40, foreigners: 30,
+    foreignGroups: 10, groupGeneral: null, groupLocal: null,
+    groupWelfare: null, memo: '', ...extra,
+  });
+  const parts = core.calculateComposition(
+    [row('2026-09-01', {}), row('2025-09-01', { visitors: 200 })],
+    '2026-09-01',
+    '2026-09-01',
+  );
+  assert.deepEqual(parts.map((p) => p.current), [40, 30, 20, 10]);
+  assert.equal(parts.reduce((n, p) => n + p.currentShare, 0), 100);
+  assert.equal(parts[3].belongsTo, '단체 구성비 + 외국인 구성비');
+  assert.equal(parts[0].previous, 200 - 40 - 20);
+  const missing = core.calculateComposition([row('2026-09-01', { foreignGroups: null })], '2026-09-01', '2026-09-01');
+  assert.ok(missing.every((p) => p.current === null));
+});
 await test('JSONB object ordering never invalidates immutable snapshots or undo', () => {
   const a = { id: 'a', rows: [{ title: '보고', visible: true }] };
   const b = { rows: [{ visible: true, title: '보고' }], id: 'a' };
@@ -484,7 +549,7 @@ await test('Excel roundtrip preserves Korean text, frozen headers and hidden-row
     const bytes = await (await fetch(download.href)).arrayBuffer();
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(bytes);
-    assert.equal(workbook.worksheets.length, 6);
+    assert.equal(workbook.worksheets.length, 7);
     assert.equal(
       workbook.getWorksheet('이후진행').getCell('B2').value,
       '한글 업무 \n 여러 줄',

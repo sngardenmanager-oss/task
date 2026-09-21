@@ -1,5 +1,7 @@
 import type { NewsItem, TaskStatus } from './types';
 
+export type NewsTone = 'positive' | 'negative';
+export type ReportNewsItem = NewsItem & { tone?: NewsTone };
 export type ReportRow = {
   id: string;
   taskId?: string;
@@ -81,7 +83,7 @@ export type ReportDocument = {
   config: ReportConfig;
   rows: ReportRow[];
   agendas: ReportAgenda[];
-  news: NewsItem[];
+  news: ReportNewsItem[];
   status: 'draft' | 'final';
   revision: number;
   originalId?: string;

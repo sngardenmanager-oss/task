@@ -1737,7 +1737,7 @@ export default function WorkCalendarApp({
               onDelete={deleteNewsItem}
             />
           )}
-          <ReportsView active={view === 'reports'} data={data} actor={actor} accessToken={accessToken} news={newsItems} updateData={updateData} openTask={openTask} />
+          <ReportsView active={view === 'reports'} data={data} actor={actor} accessToken={accessToken} news={newsItems} onLoadNews={() => void loadAllNews()} updateData={updateData} openTask={openTask} />
           {view === 'settings' && (
             <SettingsView
               data={data}
