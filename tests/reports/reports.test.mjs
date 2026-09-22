@@ -101,8 +101,19 @@ await test('routine tasks, including past ones, never enter the report', () => {
   };
   const r = core.newReport(withPast, actor, config, core.emptyReportStore());
   assert.ok(!r.rows.some((x) => /outine|Derived/.test(x.taskId)));
-  const stale = { ...r.rows[0], id: 'stale', taskId: undefined, sourceRoutineId: 'r' };
-  const refreshed = core.collectReportRows(withPast, actor, config, [], [stale]);
+  const stale = {
+    ...r.rows[0],
+    id: 'stale',
+    taskId: undefined,
+    sourceRoutineId: 'r',
+  };
+  const refreshed = core.collectReportRows(
+    withPast,
+    actor,
+    config,
+    [],
+    [stale],
+  );
   assert.ok(!refreshed.some((x) => x.id === 'stale'));
 });
 await test('hidden unfinished rows reappear next week, closed rows do not', () => {
@@ -340,35 +351,175 @@ await test('report output: slim 이전진행 columns, news tone and comma number
     ],
   );
   r.news = [
-    { id: 'p', title: 'good', category: 'k', source: 's', collectedAt: '2026-09-01', tone: 'positive' },
-    { id: 'n', title: 'bad', category: 'k', source: 's', collectedAt: '2026-09-01', tone: 'negative' },
+    {
+      id: 'p',
+      title: 'good',
+      category: 'k',
+      source: 's',
+      collectedAt: '2026-09-01',
+      tone: 'positive',
+    },
+    {
+      id: 'n',
+      title: 'bad',
+      category: 'k',
+      source: 's',
+      collectedAt: '2026-09-01',
+      tone: 'negative',
+    },
   ];
   const tables = exporter.reportTables(r);
   const before = tables.find((t) => t.name === '이전진행');
   for (const gone of ['다음 행동', '담당자', '보고 상태', '결과 메모'])
     assert.ok(!before.headers.includes(gone), gone);
-  const labels = tables[0].rows.map((x) => x[0]);
-  assert.ok(labels.includes('관광 동향 · 긍정') && labels.includes('관광 동향 · 부정'));
+  const newsTable = tables.find((t) => t.name === '관광동향');
+  assert.deepEqual(
+    newsTable.rows.map((x) => x[0]),
+    ['긍정', '부정'],
+  );
   const html = exporter.reportHtml(r);
   assert.ok(html.includes('1,234,567'));
-  assert.ok(html.includes('관광 동향 · 부정'));
+  assert.ok(html.includes('관광동향'));
+});
+await test('news: positive first then negative, each earliest date first regardless of click order', () => {
+  const n = (id, tone, collectedAt) => ({
+    id,
+    title: id,
+    category: 'k',
+    source: 's',
+    collectedAt,
+    tone,
+  });
+  const sorted = core.sortNews([
+    n('neg-late', 'negative', '2026-09-19'),
+    n('pos-late', 'positive', '2026-09-18'),
+    n('none', undefined, '2026-09-01'),
+    n('neg-early', 'negative', '2026-09-02'),
+    n('pos-early', 'positive', '2026-09-03'),
+  ]);
+  assert.deepEqual(
+    sorted.map((x) => x.id),
+    ['pos-early', 'pos-late', 'neg-early', 'neg-late', 'none'],
+  );
+});
+await test('metrics sheet spells out unit, comparison status and missing days', () => {
+  const stats = core.previewStatistics(
+    '날짜,전체입장객,매출액,단체입장객,외국인전체\n2026-09-14,1000,1000,285,309\n2025-09-14,1000,2000,255,257',
+    [],
+  ).rows;
+  const r = core.finalizeReport(
+    core.newReport(
+      data,
+      actor,
+      { ...config, statsStart: '2026-09-14', statsEnd: '2026-09-14' },
+      core.emptyReportStore(),
+    ),
+    stats,
+  );
+  const sheet = exporter.reportTables(r).find((t) => t.name === '경영지표');
+  const revenue = sheet.rows[0];
+  assert.deepEqual(revenue.slice(1, 9), [
+    1000,
+    2000,
+    -1000,
+    '-50.0%',
+    '원',
+    '감소',
+    '0일',
+    '0일',
+  ]);
+  const group = sheet.rows[2];
+  assert.equal(group[1], 28.5);
+  assert.equal(group[4], '+3.0%p');
+  assert.equal(group[6], '증가');
+});
+await test('composition skips only incomplete days instead of blanking the period', () => {
+  const row = (date, extra = {}) => ({
+    date,
+    revenue: null,
+    visitors: 100,
+    groups: 40,
+    foreigners: 30,
+    foreignGroups: 10,
+    groupGeneral: null,
+    groupLocal: null,
+    groupWelfare: null,
+    memo: '',
+    ...extra,
+  });
+  const parts = core.calculateComposition(
+    [
+      row('2026-09-01'),
+      row('2026-09-02', { foreignGroups: null }),
+      row('2025-09-01'),
+      row('2025-09-02'),
+    ],
+    '2026-09-01',
+    '2026-09-02',
+  );
+  assert.deepEqual(
+    parts.map((p) => p.current),
+    [40, 30, 20, 10],
+  );
+  assert.equal(parts[0].missing, 1);
+  assert.equal(parts[0].previousMissing, 0);
+  const daily = core.dailyComposition(
+    [row('2026-09-01')],
+    '2026-09-01',
+    '2026-09-02',
+  );
+  assert.deepEqual(daily[0].value.parts, [40, 30, 20, 10]);
+  assert.equal(daily[1].value, null);
+});
+await test('category counts rank the most frequent work first', () => {
+  assert.deepEqual(
+    core.categoryCounts([
+      { category: '데이터관리' },
+      { category: '파크운영' },
+      { category: '파크운영' },
+      { category: '' },
+    ]),
+    [
+      ['파크운영', 2],
+      ['데이터관리', 1],
+      ['기타', 1],
+    ],
+  );
 });
 await test('composition splits visitors into four non-overlapping parts', () => {
   const row = (date, extra) => ({
-    date, revenue: null, visitors: 100, groups: 40, foreigners: 30,
-    foreignGroups: 10, groupGeneral: null, groupLocal: null,
-    groupWelfare: null, memo: '', ...extra,
+    date,
+    revenue: null,
+    visitors: 100,
+    groups: 40,
+    foreigners: 30,
+    foreignGroups: 10,
+    groupGeneral: null,
+    groupLocal: null,
+    groupWelfare: null,
+    memo: '',
+    ...extra,
   });
   const parts = core.calculateComposition(
     [row('2026-09-01', {}), row('2025-09-01', { visitors: 200 })],
     '2026-09-01',
     '2026-09-01',
   );
-  assert.deepEqual(parts.map((p) => p.current), [40, 30, 20, 10]);
-  assert.equal(parts.reduce((n, p) => n + p.currentShare, 0), 100);
+  assert.deepEqual(
+    parts.map((p) => p.current),
+    [40, 30, 20, 10],
+  );
+  assert.equal(
+    parts.reduce((n, p) => n + p.currentShare, 0),
+    100,
+  );
   assert.equal(parts[3].belongsTo, '단체 구성비 + 외국인 구성비');
   assert.equal(parts[0].previous, 200 - 40 - 20);
-  const missing = core.calculateComposition([row('2026-09-01', { foreignGroups: null })], '2026-09-01', '2026-09-01');
+  const missing = core.calculateComposition(
+    [row('2026-09-01', { foreignGroups: null })],
+    '2026-09-01',
+    '2026-09-01',
+  );
   assert.ok(missing.every((p) => p.current === null));
 });
 await test('JSONB object ordering never invalidates immutable snapshots or undo', () => {
@@ -549,7 +700,7 @@ await test('Excel roundtrip preserves Korean text, frozen headers and hidden-row
     const bytes = await (await fetch(download.href)).arrayBuffer();
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(bytes);
-    assert.equal(workbook.worksheets.length, 7);
+    assert.equal(workbook.worksheets.length, 8);
     assert.equal(
       workbook.getWorksheet('이후진행').getCell('B2').value,
       '한글 업무 \n 여러 줄',

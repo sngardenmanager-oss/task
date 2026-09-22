@@ -1,8 +1,11 @@
 import type { ReportDocument, ReportRow, Statistic } from './report-types';
 import {
   calculateComposition,
+  categoryCounts,
   completedDay,
+  dailyComposition,
   daysBetween,
+  sortNews,
   statisticColumns,
 } from './reports';
 
@@ -95,6 +98,16 @@ const metricPrevious = (m: Metric) =>
   m.previous === null ? '자료 없음' : formatNumber(m.previous) + m.unit;
 const metricChange = (m: Metric) =>
   m.change === null ? m.comparison : signed(m.change) + m.comparison;
+const round1 = (n: number | null) =>
+  n === null ? null : Math.round(n * 10) / 10 || 0; // -0 은 0 으로
+// 비교 상태는 증감 방향을 말로 적는다. 계산할 수 없으면 그 이유를 적는다.
+const metricStatus = (m: Metric) => {
+  if (m.change === null) return m.comparison;
+  const r = round1(m.change)!;
+  const word = r > 0 ? '증가' : r < 0 ? '감소' : '변동 없음';
+  return m.missing || m.previousMissing ? word + ' · 누락일 있음' : word;
+};
+const dayCount = (n: number) => n + '일';
 
 const compositionOf = (report: ReportDocument) =>
   calculateComposition(
@@ -111,12 +124,35 @@ export function reportTables(report: ReportDocument): ReportTable[] {
     (r.status === '최종 완료' ? '완료일 미확인' : '');
   const stepsOf = (r: ReportRow) =>
     r.checklist.map((c) => (c.done ? '✓ ' : '□ ') + c.text).join('\n');
-  const newsLabel = (n: ReportDocument['news'][number]) =>
-    n.tone === 'positive'
-      ? '관광 동향 · 긍정'
-      : n.tone === 'negative'
-      ? '관광 동향 · 부정'
-      : '관광 동향';
+  const toneName = (n: ReportDocument['news'][number]) =>
+    n.tone === 'positive' ? '긍정' : n.tone === 'negative' ? '부정' : '미분류';
+  const news = sortNews(report.news);
+  // 같은 분류를 모아 많은 분류부터 보여준다. 분류 안에서는 작성 순서를 지킨다.
+  const bySection = (section: ReportRow['section']) => {
+    const rows = visible.filter((r) => r.section === section);
+    const order = categoryCounts(rows).map(([name]) => name);
+    return rows
+      .map((r, i) => ({ r, i }))
+      .sort(
+        (a, b) =>
+          order.indexOf(a.r.category || '기타') -
+            order.indexOf(b.r.category || '기타') || a.i - b.i,
+      )
+      .map(({ r }) => r);
+  };
+  const countText = (section: ReportRow['section']) =>
+    categoryCounts(visible.filter((r) => r.section === section))
+      .map(([name, n]) => name + ' ' + n + '건')
+      .join(' · ') || '없음';
+  const progressRow = (r: ReportRow): Cell[] => [
+    r.category,
+    r.title,
+    r.summary,
+    dayOf(r),
+    r.status,
+    doneOf(r),
+    stepsOf(r),
+  ];
   const summary: [Cell, Cell, RowTone?][] = [
     ['제목', report.config.title],
     ['회의일', report.config.meetingDate],
@@ -172,17 +208,22 @@ export function reportTables(report: ReportDocument): ReportTable[] {
           .join('\n'),
         'agenda',
       ]),
-    ...report.news.map((n): [Cell, Cell, RowTone?] => [
-      newsLabel(n),
-      (n.category ? '[' + n.category + '] ' : '') +
-        n.title +
-        '\n' +
-        n.source +
-        ' · ' +
-        n.collectedAt +
-        (n.url ? '\n' + n.url : ''),
-      n.tone,
-    ]),
+    ['이전 진행 분류별', countText('before')],
+    ['이후 진행 분류별', countText('after')],
+    [
+      '관광 동향',
+      news.length
+        ? '긍정 ' +
+          news.filter((n) => n.tone === 'positive').length +
+          '건 · 부정 ' +
+          news.filter((n) => n.tone === 'negative').length +
+          '건' +
+          (news.some((n) => !n.tone)
+            ? ' · 미분류 ' + news.filter((n) => !n.tone).length + '건'
+            : '') +
+          ' (관광동향 표 참고)'
+        : '선택 없음',
+    ],
   ];
   return [
     {
@@ -204,17 +245,7 @@ export function reportTables(report: ReportDocument): ReportTable[] {
         '완료일',
         '단계별 진행',
       ],
-      rows: visible
-        .filter((r) => r.section === 'before')
-        .map((r) => [
-          r.category,
-          r.title,
-          r.summary,
-          dayOf(r),
-          r.status,
-          doneOf(r),
-          stepsOf(r),
-        ]),
+      rows: bySection('before').map(progressRow),
       widths: [8, 18, 34, 8, 8, 8, 16],
     },
     {
@@ -228,18 +259,23 @@ export function reportTables(report: ReportDocument): ReportTable[] {
         '완료일',
         '단계별 진행',
       ],
-      rows: visible
-        .filter((r) => r.section === 'after')
-        .map((r) => [
-          r.category,
-          r.title,
-          r.summary,
-          dayOf(r),
-          r.status,
-          doneOf(r),
-          stepsOf(r),
-        ]),
+      rows: bySection('after').map(progressRow),
       widths: [8, 18, 34, 8, 8, 8, 16],
+    },
+    {
+      // 긍정 → 부정 순, 각각 빠른 일자순. 선택한 순서와 관계없이 같은 순서로 나온다.
+      name: '관광동향',
+      headers: ['구분', '일자', '키워드', '제목', '출처', '링크'],
+      rows: news.map((n) => [
+        toneName(n),
+        n.collectedAt,
+        n.category,
+        n.title,
+        n.source,
+        n.url ?? '',
+      ]),
+      tones: news.map((n) => n.tone),
+      widths: [6, 9, 10, 40, 10, 25],
     },
     {
       name: '전주후속',
@@ -269,23 +305,30 @@ export function reportTables(report: ReportDocument): ReportTable[] {
         '지표',
         '당년',
         '전년',
-        '차이·증감률',
+        '전년 차이',
+        '증감',
         '단위',
         '비교 상태',
         '당년 누락 일수',
         '전년 누락 일수',
       ],
-      rows: report.metrics.map((m) => [
-        m.label,
-        m.current,
-        m.previous,
-        m.change,
-        m.unit,
-        m.comparison,
-        m.missing,
-        m.previousMissing,
-      ]),
-      widths: [16, 15, 15, 14, 6, 18, 8, 8],
+      rows: report.metrics.map((m) => {
+        const ratio = m.unit === '%';
+        return [
+          m.label,
+          round1(m.current),
+          round1(m.previous),
+          m.current === null || m.previous === null
+            ? null
+            : round1(m.current - m.previous),
+          m.change === null ? '—' : signed(m.change) + m.comparison,
+          ratio ? '% (차이는 %p)' : m.unit,
+          metricStatus(m),
+          dayCount(m.missing),
+          dayCount(m.previousMissing),
+        ];
+      }),
+      widths: [12, 14, 14, 13, 9, 9, 15, 7, 7],
     },
     {
       name: '입장객구성',
@@ -297,17 +340,22 @@ export function reportTables(report: ReportDocument): ReportTable[] {
         '전년 인원',
         '전년 비중(%)',
         '비중 차이(%p)',
+        '집계 제외 일수',
       ],
       rows: composition.map((c) => [
         c.label,
         c.belongsTo,
         c.current,
-        c.currentShare,
+        round1(c.currentShare),
         c.previous,
-        c.previousShare,
-        c.shareChange,
+        round1(c.previousShare),
+        round1(c.shareChange),
+        '당년 ' +
+          dayCount(c.missing) +
+          ' · 전년 ' +
+          dayCount(c.previousMissing),
       ]),
-      widths: [16, 26, 12, 12, 12, 12, 12],
+      widths: [13, 22, 10, 10, 10, 10, 10, 15],
     },
     {
       name: '통계원본',
@@ -319,6 +367,7 @@ export function reportTables(report: ReportDocument): ReportTable[] {
     },
   ];
 }
+const trendHeaders = ['전년 차이', '비중 차이(%p)'];
 const numberFormat = (v: number) => (Number.isInteger(v) ? '#,##0' : '#,##0.0');
 const visualLength = (text: string) => {
   let n = 0;
@@ -393,8 +442,7 @@ export async function exportReportExcel(report: ReportDocument) {
       }
       const values = table.rows[index - 2];
       const tone = table.tones?.[index - 2];
-      const toneColor =
-        keyValue && tone && tone !== 'metric' ? palette[tone] : undefined;
+      const toneColor = tone && tone !== 'metric' ? palette[tone] : undefined;
       let lines = 1;
       for (let col = 1; col <= table.headers.length; col++) {
         const cell = row.getCell(col);
@@ -407,7 +455,7 @@ export async function exportReportExcel(report: ReportDocument) {
         if (typeof value === 'number') {
           cell.numFmt = numberFormat(value);
           cell.alignment = { vertical: 'top', horizontal: 'right' };
-          if (header === '차이·증감률' || header === '비중 차이(%p)')
+          if (trendHeaders.includes(header))
             cell.font = font({
               bold: true,
               color: { argb: 'FF' + (value < 0 ? palette.down : palette.up) },
@@ -418,8 +466,15 @@ export async function exportReportExcel(report: ReportDocument) {
           cell.fill = fill(color.bg);
           cell.font = font({ bold: true, color: { argb: 'FF' + color.fg } });
         }
+        if (toneColor) {
+          cell.fill = fill(toneColor.bg);
+          if (col === 1)
+            cell.font = font({
+              bold: true,
+              color: { argb: 'FF' + toneColor.fg },
+            });
+        }
         if (keyValue) {
-          if (toneColor) cell.fill = fill(toneColor.bg);
           if (col === 1) {
             cell.fill = fill(toneColor?.bg ?? palette.label);
             cell.font = font({
@@ -458,9 +513,9 @@ const escapeHtml = (v: string | number | null) =>
   String(v ?? '').replace(
     /[&<>"']/g,
     (c) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[
         c
-      ]!),
+      ]!,
   );
 const badge = (c: { bg: string; fg: string }) =>
   ' style="background:#' + c.bg + ';color:#' + c.fg + ';font-weight:700"';
@@ -487,6 +542,16 @@ const reportCss =
   palette.line +
   ';margin:4px 0}.bar i{display:block;color:#fff;font:700 10px/22px "Malgun Gothic",sans-serif;text-align:center;overflow:hidden;white-space:nowrap}' +
   '.bracket{display:flex;font-size:10px;font-weight:700;margin-bottom:6px}.bracket span{border-top:3px solid;padding-top:1px;text-align:center;overflow:hidden;white-space:nowrap}' +
+  '.daily{border:1px solid #' +
+  palette.line +
+  ';border-radius:5px;padding:6px 8px;margin:6px 0;break-inside:avoid}' +
+  '.daily h3{font-size:11px;margin:0 0 4px}.legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:9.5px;margin:2px 0 4px}' +
+  '.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}' +
+  '.drow{display:flex;align-items:flex-end;gap:2px}.drow .lab{width:70px;flex:none;font-size:9px;font-weight:700;align-self:center}' +
+  '.dcol{flex:1;min-width:0;display:flex;flex-direction:column-reverse;gap:1px;height:56px}' +
+  '.dcol b{display:block;min-height:0}.dcol.none{border:1px dashed #BCCBC0;border-radius:2px}' +
+  '.dnum,.ddate{display:flex;gap:2px;font-size:8px;color:#55605A}.dnum span,.ddate span{flex:1;min-width:0;text-align:center;overflow:hidden;white-space:nowrap}' +
+  '.dnum:before,.ddate:before{content:"";width:70px;flex:none}' +
   '.up{color:#' +
   palette.up +
   '!important;font-weight:700}.down{color:#' +
@@ -507,6 +572,102 @@ const reportCss =
   palette.label +
   ';font-weight:700}.empty{margin:2px 0 8px;color:#8A968E}' +
   'button{padding:10px 22px;cursor:pointer;margin-bottom:8px}@media print{button{display:none}}';
+// 일자별 입장객 분포. 윗줄은 내국인·외국인 구성비, 아랫줄은 그 안의 개인·단체 네 구분.
+// 아랫줄은 아래부터 내국인 개인 → 내국인 단체 → 외국인 단체 → 외국인 개인으로 쌓아
+// 윗줄의 내국인·외국인 경계와 맞고, 단체(내국인+외국인)는 가운데에 이어서 보인다.
+export const dailyColors = {
+  domestic: '#6B7D71',
+  foreign: '#1B5E9E',
+  parts: ['#8A968E', '#2F6B4F', '#1B5E9E', '#D9822B'],
+};
+export const dailyLabels = {
+  domestic: '내국인',
+  foreign: '외국인',
+  parts: ['내국인 개인', '내국인 단체', '외국인 개인', '외국인 단체'],
+};
+export const dailyStack = [0, 1, 3, 2];
+function dailyChartHtml(report: ReportDocument) {
+  const days = dailyComposition(
+    report.statistics,
+    report.config.statsStart,
+    report.config.statsEnd,
+  );
+  if (!days.some((d) => d.value)) return '';
+  const pct = (n: number, total: number) =>
+    total > 0 ? ((n / total) * 100).toFixed(2) : '0';
+  const seg = (n: number, total: number, color: string, title: string) =>
+    '<b style="height:' +
+    pct(n, total) +
+    '%;background:' +
+    color +
+    '" title="' +
+    escapeHtml(
+      title +
+        ' ' +
+        formatNumber(n) +
+        '명 (' +
+        pct(n, total).slice(0, -1) +
+        '%)',
+    ) +
+    '"></b>';
+  const col = (d: (typeof days)[number], top: boolean) => {
+    if (!d.value) return '<div class="dcol none" title="미입력"></div>';
+    const { visitors, parts } = d.value;
+    const inner = top
+      ? seg(parts[0] + parts[1], visitors, dailyColors.domestic, '내국인') +
+        seg(parts[2] + parts[3], visitors, dailyColors.foreign, '외국인')
+      : dailyStack
+          .map((i) =>
+            seg(parts[i], visitors, dailyColors.parts[i], dailyLabels.parts[i]),
+          )
+          .join('');
+    return '<div class="dcol">' + inner + '</div>';
+  };
+  const legend = (items: [string, string][]) =>
+    '<div class="legend">' +
+    items
+      .map(
+        ([label, color]) =>
+          '<span><i style="background:' +
+          color +
+          '"></i>' +
+          escapeHtml(label) +
+          '</span>',
+      )
+      .join('') +
+    '</div>';
+  const line = (cls: string, cells: string[]) =>
+    '<div class="' +
+    cls +
+    '">' +
+    cells.map((c) => '<span>' + c + '</span>').join('') +
+    '</div>';
+  return (
+    '<div class="daily"><h3>일자별 입장객 분포 (막대 높이 = 그날 전체 입장객 100%)</h3>' +
+    line(
+      'dnum',
+      days.map((d) => (d.value ? formatNumber(d.value.visitors) : '미입력')),
+    ) +
+    '<div class="drow"><span class="lab">내국인·외국인</span>' +
+    days.map((d) => col(d, true)).join('') +
+    '</div>' +
+    legend([
+      ['내국인', dailyColors.domestic],
+      ['외국인', dailyColors.foreign],
+    ]) +
+    '<div class="drow"><span class="lab">개인·단체</span>' +
+    days.map((d) => col(d, false)).join('') +
+    '</div>' +
+    line(
+      'ddate',
+      days.map((d) => d.date.slice(5)),
+    ) +
+    legend(
+      dailyStack.map((i) => [dailyLabels.parts[i], dailyColors.parts[i]]),
+    ) +
+    '</div>'
+  );
+}
 export function reportHtml(report: ReportDocument) {
   const cardNote: Record<string, string> = {
     '단체 구성비': '단체 ÷ 전체 · 외국인 단체 포함',
@@ -530,7 +691,15 @@ export function reportHtml(report: ReportDocument) {
         (cardNote[m.label]
           ? '<em>' + escapeHtml(cardNote[m.label]) + '</em>'
           : '') +
-        '</div>'
+        '<em>' +
+        escapeHtml(
+          metricStatus(m) +
+            ' · 누락 당년 ' +
+            dayCount(m.missing) +
+            ' / 전년 ' +
+            dayCount(m.previousMissing),
+        ) +
+        '</em></div>'
       );
     })
     .join('');
@@ -591,14 +760,13 @@ export function reportHtml(report: ReportDocument) {
       .join('');
     const body = rows
       .map(({ row, tone }) => {
-        const toneColor =
-          keyValue && tone && tone !== 'metric' ? palette[tone] : undefined;
+        const toneColor = tone && tone !== 'metric' ? palette[tone] : undefined;
         const cells = row.map((v, col) => {
           const header = t.headers[col];
           const color = colorOf(header, v, seen);
           const isNumber = typeof v === 'number';
           const trend =
-            (header === '차이·증감률' || header === '비중 차이(%p)') && isNumber
+            trendHeaders.includes(header) && isNumber
               ? v < 0
                 ? ' down'
                 : ' up'
@@ -608,8 +776,8 @@ export function reportHtml(report: ReportDocument) {
               ? badge(toneColor)
               : ' style="background:#' + toneColor.bg + '"'
             : color
-            ? badge(color)
-            : '';
+              ? badge(color)
+              : '';
           return (
             '<td' +
             (isNumber ? ' class="num' + trend + '"' : '') +
@@ -652,6 +820,7 @@ export function reportHtml(report: ReportDocument) {
     ) +
     '</p>' +
     (cards ? '<div class="cards">' + cards + '</div>' : '') +
+    dailyChartHtml(report) +
     compositionBar +
     reportTables(report).map(section).join('') +
     '</body></html>'

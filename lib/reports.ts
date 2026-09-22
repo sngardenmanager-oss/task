@@ -553,8 +553,8 @@ export function previewStatistics(
         value === ''
           ? null
           : /^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(value)
-          ? Number(value.replaceAll(',', ''))
-          : NaN;
+            ? Number(value.replaceAll(',', ''))
+            : NaN;
     });
     for (const error of validateStatistic(next))
       result.errors.push(i + 2 + '행 (' + date + '): ' + error);
@@ -616,8 +616,8 @@ export function calculateMetrics(
       current === null || previous === null || (!ratio && previous === 0)
         ? null
         : ratio
-        ? current - previous
-        : ((current - previous) / previous) * 100;
+          ? current - previous
+          : ((current - previous) / previous) * 100;
     return {
       label,
       current,
@@ -628,10 +628,10 @@ export function calculateMetrics(
         previous === 0 && !ratio
           ? '비교 불가(전년 0)'
           : current === null || previous === null
-          ? '자료 없음 또는 분모 0'
-          : ratio
-          ? '%p'
-          : '%',
+            ? '자료 없음 또는 분모 0'
+            : ratio
+              ? '%p'
+              : '%',
       missing: ratio ? Math.max(a.missing, av.missing) : a.missing,
       previousMissing: ratio ? Math.max(b.missing, bv.missing) : b.missing,
     };
@@ -646,9 +646,51 @@ export type CompositionPart = {
   currentShare: number | null;
   previousShare: number | null;
   shareChange: number | null;
+  // 전체·단체·외국인·외국인 단체 중 빈칸이 있거나 서로 맞지 않아 집계에서 뺀 날 수.
+  missing: number;
+  previousMissing: number;
 };
+export type DailyComposition = {
+  date: string;
+  visitors: number;
+  // 내국인 개인, 내국인 단체, 외국인 개인, 외국인 단체 (겹치지 않음)
+  parts: [number, number, number, number];
+};
+// 하루 자료를 겹치지 않는 네 구분으로 나눈다. 빈칸이 있거나 부분집합이 전체보다 크면 null.
+function dayParts(s?: Statistic): DailyComposition | null {
+  if (
+    !s ||
+    s.visitors === null ||
+    s.groups === null ||
+    s.foreigners === null ||
+    s.foreignGroups === null
+  )
+    return null;
+  const parts: DailyComposition['parts'] = [
+    s.visitors - s.groups - (s.foreigners - s.foreignGroups),
+    s.groups - s.foreignGroups,
+    s.foreigners - s.foreignGroups,
+    s.foreignGroups,
+  ];
+  return parts.some((v) => v < 0)
+    ? null
+    : { date: s.date, visitors: s.visitors, parts };
+}
+export function dailyComposition(
+  rows: Statistic[],
+  start: string,
+  end: string,
+): { date: string; value: DailyComposition | null }[] {
+  const map = new Map(rows.map((r) => [r.date, r]));
+  return daysBetween(start, end).map((date) => ({
+    date,
+    value: dayParts(map.get(date)),
+  }));
+}
 // 단체 구성비와 외국인 구성비는 외국인 단체를 공통으로 포함한다.
 // 전체 입장객을 겹치지 않는 네 구분으로 나눠 두 비율의 관계를 보여준다.
+// 하루라도 빈칸이 있으면 전체가 사라지지 않도록, 네 값이 모두 있는 날만 합산하고
+// 제외한 날 수를 함께 돌려준다.
 export function calculateComposition(
   rows: Statistic[],
   start: string,
@@ -657,32 +699,22 @@ export function calculateComposition(
   const ps = previousYear(start),
     pe = previousYear(end);
   const counts = (from: string, to: string) => {
-    const t = (key: 'visitors' | 'groups' | 'foreigners' | 'foreignGroups') =>
-      periodTotal(rows, from, to, key).value;
-    const visitors = t('visitors'),
-      groups = t('groups'),
-      foreigners = t('foreigners'),
-      foreignGroups = t('foreignGroups');
-    if (
-      visitors === null ||
-      groups === null ||
-      foreigners === null ||
-      foreignGroups === null
-    )
-      return null;
-    const parts = [
-      visitors - groups - (foreigners - foreignGroups),
-      groups - foreignGroups,
-      foreigners - foreignGroups,
-      foreignGroups,
-    ];
-    // 부분집합이 전체보다 큰 자료는 구성비로 보여주지 않는다.
-    return parts.some((v) => v < 0) ? null : { visitors, parts };
+    const days = dailyComposition(rows, from, to);
+    const valid = days.flatMap((d) => (d.value ? [d.value] : []));
+    const missing = days.length - valid.length;
+    if (!valid.length) return { total: null, missing };
+    const parts = [0, 1, 2, 3].map((i) =>
+      valid.reduce((n, d) => n + d.parts[i], 0),
+    );
+    const visitors = valid.reduce((n, d) => n + d.visitors, 0);
+    return { total: { visitors, parts }, missing };
   };
   const a = counts(start, end),
     b = counts(ps, pe);
   const share = (c: typeof a, i: number) =>
-    c && c.visitors > 0 ? (c.parts[i] / c.visitors) * 100 : null;
+    c.total && c.total.visitors > 0
+      ? (c.total.parts[i] / c.total.visitors) * 100
+      : null;
   return [
     ['내국인 개인', '어느 지표에도 포함 안 됨'],
     ['내국인 단체', '단체 구성비'],
@@ -694,16 +726,44 @@ export function calculateComposition(
     return {
       label,
       belongsTo,
-      current: a ? a.parts[i] : null,
-      previous: b ? b.parts[i] : null,
+      current: a.total ? a.total.parts[i] : null,
+      previous: b.total ? b.total.parts[i] : null,
       currentShare,
       previousShare,
       shareChange:
         currentShare === null || previousShare === null
           ? null
           : currentShare - previousShare,
+      missing: a.missing,
+      previousMissing: b.missing,
     };
   });
+}
+// 관광 동향은 긍정 → 부정 → 미분류 순으로, 각 묶음 안에서는 빠른 일자순으로 둔다.
+export function sortNews<T extends { tone?: string; collectedAt: string }>(
+  news: T[],
+): T[] {
+  const rank = (tone?: string) =>
+    tone === 'positive' ? 0 : tone === 'negative' ? 1 : 2;
+  return news
+    .map((n, i) => ({ n, i }))
+    .sort(
+      (a, b) =>
+        rank(a.n.tone) - rank(b.n.tone) ||
+        a.n.collectedAt.localeCompare(b.n.collectedAt) ||
+        a.i - b.i,
+    )
+    .map(({ n }) => n);
+}
+// 보고 분류별 건수. 많은 순으로, 같으면 먼저 나온 분류 순.
+export function categoryCounts(rows: { category: string }[]) {
+  const counts = new Map<string, number>();
+  for (const r of rows)
+    counts.set(
+      r.category || '기타',
+      (counts.get(r.category || '기타') ?? 0) + 1,
+    );
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
 }
 export function undoStatisticImport(
   store: ReportStore,

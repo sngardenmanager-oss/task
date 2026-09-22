@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog';
 import type { NewsItem } from '@/lib/types';
 import type { NewsTone, ReportNewsItem } from '@/lib/report-types';
+import { sortNews } from '@/lib/reports';
 
 const toneLabel: Record<NewsTone, string> = {
   positive: '긍정',
@@ -98,6 +99,17 @@ export default function ReportNewsPicker({
       )
       .sort((a, b) => b.collectedAt.localeCompare(a.collectedAt));
   }, [news, keyword, query]);
+  // 고른 순서와 관계없이 긍정 → 부정 → 미분류, 각각 빠른 일자순으로 보여준다.
+  const groups = useMemo(() => {
+    const sorted = sortNews(selected);
+    return (
+      [
+        ['positive', sorted.filter((n) => n.tone === 'positive')],
+        ['negative', sorted.filter((n) => n.tone === 'negative')],
+        ['none', sorted.filter((n) => !n.tone)],
+      ] as [NewsTone | 'none', ReportNewsItem[]][]
+    ).filter(([, items]) => items.length);
+  }, [selected]);
   function toggle(item: NewsItem, on: boolean) {
     onChange(
       on
@@ -130,34 +142,51 @@ export default function ReportNewsPicker({
         </span>
       </div>
       {selected.length ? (
-        <ul className="space-y-1">
-          {selected.map((item) => (
-            <li
-              key={item.id}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#d8ded4] px-3 py-2 text-sm"
-            >
-              <span className="min-w-0 flex-1">
-                <span className="text-xs text-[#64776a]">
-                  [{item.category}] {item.source} · {item.collectedAt}
-                </span>
-                <span className="block">{item.title}</span>
-              </span>
-              <ToneButtons
-                tone={item.tone}
-                disabled={disabled}
-                onChange={(tone) => setTone(item.id, tone)}
-              />
-              <button
-                type="button"
-                disabled={disabled}
-                className="text-xs text-[#a83f36]"
-                onClick={() => toggle(item, false)}
+        <div className="space-y-3">
+          {groups.map(([tone, items]) => (
+            <div key={tone}>
+              <p
+                className={
+                  'mb-1 inline-block rounded-md border px-2 py-0.5 text-xs font-bold ' +
+                  (tone === 'none'
+                    ? 'border-[#d8ded4] text-[#64776a]'
+                    : toneStyle[tone])
+                }
               >
-                제외
-              </button>
-            </li>
+                {tone === 'none' ? '미분류' : toneLabel[tone]} {items.length}건
+                · 빠른 일자순
+              </p>
+              <ul className="space-y-1">
+                {items.map((item) => (
+                  <li
+                    key={item.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#d8ded4] px-3 py-2 text-sm"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="text-xs text-[#64776a]">
+                        [{item.category}] {item.source} · {item.collectedAt}
+                      </span>
+                      <span className="block">{item.title}</span>
+                    </span>
+                    <ToneButtons
+                      tone={item.tone}
+                      disabled={disabled}
+                      onChange={(tone) => setTone(item.id, tone)}
+                    />
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      className="text-xs text-[#a83f36]"
+                      onClick={() => toggle(item, false)}
+                    >
+                      제외
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ))}
-        </ul>
+        </div>
       ) : (
         <p className="text-sm text-[#64776a]">
           선택한 관광 뉴스가 없습니다. 보고서에는 선택한 뉴스만 들어갑니다.

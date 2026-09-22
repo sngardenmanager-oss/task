@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import ReportNewsPicker from './report-news-picker';
-import RatioComposition from './report-composition';
+import RatioComposition, { DailyVisitorChart } from './report-composition';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import type { Member, NewsItem, Task, WorkspaceState } from '@/lib/types';
 import type {
@@ -31,6 +31,7 @@ import type {
 } from '@/lib/report-types';
 import {
   calculateMetrics,
+  categoryCounts,
   completedDay,
   collectReportRows,
   daysBetween,
@@ -121,11 +122,16 @@ function MetricCards({
               {m.unit}
             </p>
           )}
-          {(m.missing > 0 || m.previousMissing > 0) && (
-            <p className="mt-1 text-xs text-amber-700">
-              미입력: 당년 {m.missing}일 · 전년 {m.previousMissing}일
-            </p>
-          )}
+          <p
+            className={
+              'mt-1 text-xs ' +
+              (m.missing > 0 || m.previousMissing > 0
+                ? 'text-amber-700'
+                : 'text-[#8a968e]')
+            }
+          >
+            누락 일수: 당년 {m.missing}일 · 전년 {m.previousMissing}일
+          </p>
         </div>
       ))}
     </div>
@@ -166,6 +172,18 @@ export default function ReportsView({
   const [showExcluded, setShowExcluded] = useState(false);
   const [openNotes, setOpenNotes] = useState<string[]>([]);
   const [showClosed, setShowClosed] = useState(false);
+  const [catFilter, setCatFilter] = useState<
+    Record<ReportRow['section'], string[]>
+  >({
+    before: [],
+    after: [],
+  });
+  const [catSort, setCatSort] = useState<Record<ReportRow['section'], boolean>>(
+    {
+      before: false,
+      after: false,
+    },
+  );
   const [selected, setSelected] = useState<string[]>([]);
   const [csv, setCsv] = useState<{ text: string; filename: string } | null>(
     null,
@@ -497,8 +515,8 @@ export default function ReportsView({
             {readOnly
               ? '확정본 · 수정 ' + report.revision
               : dirty
-              ? '저장하지 않은 변경사항'
-              : '초안'}{' '}
+                ? '저장하지 않은 변경사항'
+                : '초안'}{' '}
             {busy ? '· 저장 중' : ''}
           </p>
         </div>
@@ -629,6 +647,11 @@ export default function ReportsView({
         </Field>
       </fieldset>
       <MetricCards report={report} store={store} />
+      <DailyVisitorChart
+        rows={report.status === 'final' ? report.statistics : store.statistics}
+        start={report.config.statsStart}
+        end={report.config.statsEnd}
+      />
       <RatioComposition
         rows={report.status === 'final' ? report.statistics : store.statistics}
         start={report.config.statsStart}
@@ -768,34 +791,109 @@ export default function ReportsView({
                 ))}
             </div>
           )}
-          {(['before', 'after'] as const).map((section) => (
-            <section key={section} className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h3 className="text-lg font-bold">
-                    {section === 'before' ? '이전 진행 내용' : '이후 진행 내용'}
-                  </h3>
-                  <p className="text-sm text-[#64776a]">
-                    {section === 'before'
-                      ? '보고 완결 전까지 과거 업무를 계속 포함합니다.'
-                      : '루틴을 제외한 모든 이후 업무 · 일정 상한 없음'}
-                  </p>
+          {(['before', 'after'] as const).map((section) => {
+            const pool = report.rows.filter(
+              (r) => r.section === section && (r.visible || showExcluded),
+            );
+            const counts = categoryCounts(pool);
+            const picked = catFilter[section].filter((c) =>
+              counts.some(([name]) => name === c),
+            );
+            const order = counts.map(([name]) => name);
+            const shown = pool
+              .filter(
+                (r) => !picked.length || picked.includes(r.category || '기타'),
+              )
+              .map((r, i) => ({ r, i }))
+              .sort((a, b) =>
+                catSort[section]
+                  ? order.indexOf(a.r.category || '기타') -
+                      order.indexOf(b.r.category || '기타') || a.i - b.i
+                  : a.i - b.i,
+              )
+              .map(({ r }) => r);
+            const chip = (on: boolean) =>
+              'min-h-8 rounded-full border px-3 text-xs font-bold ' +
+              (on
+                ? 'border-[#2f6b4f] bg-[#2f6b4f] text-white'
+                : 'border-[#d8ded4] bg-white text-[#43594b]');
+            return (
+              <section key={section} className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-lg font-bold">
+                      {section === 'before'
+                        ? '이전 진행 내용'
+                        : '이후 진행 내용'}
+                    </h3>
+                    <p className="text-sm text-[#64776a]">
+                      {section === 'before'
+                        ? '보고 완결 전까지 과거 업무를 계속 포함합니다.'
+                        : '루틴을 제외한 모든 이후 업무 · 일정 상한 없음'}
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    disabled={readOnly || busy}
+                    onClick={() =>
+                      edit({ rows: [...report.rows, manualRow(section)] })
+                    }
+                  >
+                    <Plus />행 추가
+                  </Button>
                 </div>
-                <Button
-                  variant="outline"
-                  disabled={readOnly || busy}
-                  onClick={() =>
-                    edit({ rows: [...report.rows, manualRow(section)] })
-                  }
-                >
-                  <Plus />행 추가
-                </Button>
-              </div>
-              {report.rows
-                .filter(
-                  (r) => r.section === section && (r.visible || showExcluded),
-                )
-                .map((row) => (
+                {counts.length > 0 && (
+                  <fieldset
+                    aria-label={
+                      (section === 'before' ? '이전' : '이후') +
+                      ' 진행 분류 필터'
+                    }
+                    className="m-0 flex min-w-0 flex-wrap items-center gap-1.5 border-0 p-0"
+                  >
+                    <button
+                      type="button"
+                      aria-pressed={!picked.length}
+                      className={chip(!picked.length)}
+                      onClick={() =>
+                        setCatFilter((f) => ({ ...f, [section]: [] }))
+                      }
+                    >
+                      전체 {pool.length}
+                    </button>
+                    {counts.map(([name, n]) => (
+                      <button
+                        key={name}
+                        type="button"
+                        aria-pressed={picked.includes(name)}
+                        className={chip(picked.includes(name))}
+                        onClick={() =>
+                          setCatFilter((f) => ({
+                            ...f,
+                            [section]: picked.includes(name)
+                              ? picked.filter((c) => c !== name)
+                              : [...picked, name],
+                          }))
+                        }
+                      >
+                        {name} {n}
+                      </button>
+                    ))}
+                    <label className="ml-auto flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={catSort[section]}
+                        onChange={(e) =>
+                          setCatSort((s) => ({
+                            ...s,
+                            [section]: e.target.checked,
+                          }))
+                        }
+                      />
+                      분류별로 모아 보기 (많은 분류 순)
+                    </label>
+                  </fieldset>
+                )}
+                {shown.map((row) => (
                   <ReportRowEditor
                     key={row.id}
                     row={row}
@@ -870,16 +968,16 @@ export default function ReportsView({
                     config={report.config}
                   />
                 ))}
-              {!report.rows.some(
-                (r) => r.section === section && (r.visible || showExcluded),
-              ) && (
-                <div className={panel + ' text-sm text-[#64776a]'}>
-                  표시할 항목이 없습니다. 최신 업무를 불러오거나 행을 추가해
-                  주세요.
-                </div>
-              )}
-            </section>
-          ))}
+                {!shown.length && (
+                  <div className={panel + ' text-sm text-[#64776a]'}>
+                    {pool.length
+                      ? '선택한 분류에 해당하는 항목이 없습니다.'
+                      : '표시할 항목이 없습니다. 최신 업무를 불러오거나 행을 추가해 주세요.'}
+                  </div>
+                )}
+              </section>
+            );
+          })}
           <section className={panel}>
             <div className="flex items-center justify-between gap-2">
               <h3 className="font-bold">대표님 안건 · 결정 요청</h3>
@@ -1792,10 +1890,10 @@ function ReportRowEditor({
   const bucket = !row.date
     ? '일정 미정'
     : row.date <= config.planEnd
-    ? '이번 주'
-    : row.date <= shiftDay(config.planEnd, 7)
-    ? '다음 주'
-    : '그 이후';
+      ? '이번 주'
+      : row.date <= shiftDay(config.planEnd, 7)
+        ? '다음 주'
+        : '그 이후';
   const actual = completedDay(row.completedAt);
   const highlight =
     actual && actual >= config.actualStart && actual <= config.actualEnd;
