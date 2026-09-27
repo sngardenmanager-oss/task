@@ -17,6 +17,23 @@ const coreUrl =
     }).outputText,
   ).toString('base64');
 const core = await import(coreUrl);
+const jejuSource = (
+  await fs.readFile(
+    new URL('../../lib/jeju-arrivals.ts', import.meta.url),
+    'utf8',
+  )
+).replace("from './reports'", 'from ' + JSON.stringify(coreUrl));
+const jejuUrl =
+  'data:text/javascript;base64,' +
+  Buffer.from(
+    ts.transpileModule(jejuSource, {
+      compilerOptions: {
+        module: ts.ModuleKind.ESNext,
+        target: ts.ScriptTarget.ES2022,
+      },
+    }).outputText,
+  ).toString('base64');
+const jeju = await import(jejuUrl);
 const exportSource = (
   await fs.readFile(
     new URL('../../lib/report-export.ts', import.meta.url),
@@ -24,6 +41,7 @@ const exportSource = (
   )
 )
   .replace("from './reports'", 'from ' + JSON.stringify(coreUrl))
+  .replace("from './jeju-arrivals'", 'from ' + JSON.stringify(jejuUrl))
   .replace(
     "import('exceljs')",
     'import(' +
@@ -471,6 +489,30 @@ await test('composition skips only incomplete days instead of blanking the perio
   assert.deepEqual(daily[0].value.parts, [40, 30, 20, 10]);
   assert.equal(daily[1].value, null);
 });
+await test('progress export groups by category, then earliest due date, undated last', () => {
+  const r = core.finalizeReport(
+    core.newReport(data, actor, config, core.emptyReportStore()),
+    [],
+  );
+  const row = (title, category, date) => ({
+    ...core.manualRow('before'),
+    title,
+    category,
+    date,
+  });
+  r.rows = [
+    row('A-late', '파크운영', '2026-09-20'),
+    row('B', '데이터관리', '2026-09-01'),
+    row('A-none', '파크운영', ''),
+    row('A-early', '파크운영', '2026-09-03'),
+  ];
+  const before = exporter.reportTables(r).find((t) => t.name === '이전진행');
+  assert.deepEqual(
+    before.rows.map((x) => x[1]),
+    ['A-early', 'A-late', 'A-none', 'B'],
+  );
+  assert.ok(exporter.reportHtml(r).includes('size:A4 portrait'));
+});
 await test('category counts rank the most frequent work first', () => {
   assert.deepEqual(
     core.categoryCounts([
@@ -608,6 +650,10 @@ routeSource = routeSource.replace(
   "from '@/lib/reports'",
   'from ' + JSON.stringify(coreUrl),
 );
+routeSource = routeSource.replace(
+  "from '@/lib/jeju-arrivals'",
+  'from ' + JSON.stringify(jejuUrl),
+);
 const route = await import(
   'data:text/javascript;base64,' +
     Buffer.from(
@@ -711,4 +757,282 @@ await test('Excel roundtrip preserves Korean text, frozen headers and hidden-row
   } finally {
     globalThis.document = previousDocument;
   }
+});
+
+const arrival = (date, total = 300000, domestic = 240000, foreign = 60000) => ({
+  date,
+  total,
+  domestic,
+  foreign,
+  source: '검증용 가상자료',
+  asOf: '2026-09-27',
+  status: 'provisional',
+});
+const garden = (date, visitors = 15000, foreigners = 3000) => ({
+  date,
+  visitors,
+  foreigners,
+  revenue: null,
+  groups: null,
+  foreignGroups: null,
+  groupGeneral: null,
+  groupLocal: null,
+  groupWelfare: null,
+  memo: '',
+});
+const defaults = {
+  source: '검증용 가상자료',
+  asOf: '2026-09-27',
+  status: 'provisional',
+};
+const arrivalCsv = (line) => '날짜,총입도객,내국인입도객,외국인입도객\n' + line;
+
+await test('Jeju CSV derives totals, validates rows and roundtrips provenance', () => {
+  const p = jeju.previewJejuCsv(
+    arrivalCsv('2026-09-14,,240000,60000'),
+    defaults,
+  );
+  assert.deepEqual(p.errors, []);
+  assert.equal(p.rows[0].total, 300000);
+  p.rows[0].source = '기관, "원본"\n둘째 줄';
+  assert.deepEqual(
+    jeju.previewJejuCsv(jeju.jejuCsv(p.rows), defaults).rows,
+    p.rows,
+  );
+  for (const line of [
+    '2026-09-14,1,2,3',
+    '2026-09-14,-1,0,0',
+    '2026-09-14,1.5,,',
+    '2026-02-30,10,,',
+    '2026-09-14,,,',
+    '2026-09-14,9007199254740992,,',
+    '2026-09-14,100,101,',
+  ]) {
+    assert.ok(
+      jeju.previewJejuCsv(arrivalCsv(line), defaults).errors.length,
+      line,
+    );
+  }
+  assert.ok(
+    jeju
+      .previewJejuCsv(
+        arrivalCsv('2026-09-14,0,0,0\n2026-09-14,1,1,0'),
+        defaults,
+      )
+      .errors.some((e) => e.includes('중복')),
+  );
+  assert.ok(
+    jeju.previewJejuCsv('날짜,전체입장객\n2026-09-14,15', defaults).errors
+      .length,
+  );
+  assert.equal(
+    jeju.previewJejuCsv(arrivalCsv('2026-09-14,0,0,0'), defaults).rows[0].total,
+    0,
+  );
+  assert.equal(
+    jeju.previewJejuCsv(arrivalCsv('2026-09-14,300000,,'), defaults).rows[0]
+      .domestic,
+    null,
+  );
+});
+
+await test('Jeju ratios compare matched nationalities and use percentage points', () => {
+  const s = jeju.calculateJeju(
+    [arrival('2026-09-14'), arrival('2025-09-14', 280000, 230000, 50000)],
+    [garden('2026-09-14'), garden('2025-09-14', 13000, 2000)],
+    '2026-09-14',
+    '2026-09-14',
+  );
+  assert.deepEqual(
+    s.columns.map((c) => c.current.share),
+    [5, 5, 5],
+  );
+  assert.deepEqual(
+    s.columns.map((c) => c.difference),
+    [20000, 10000, 10000],
+  );
+  assert.equal(s.columns[2].growth, 20);
+  assert.equal(s.columns[2].shareChange, 1);
+  assert.equal(jeju.jejuSummaryRows(s)[8][2], '+0.22%p 증가');
+  const weighted = jeju.calculateJeju(
+    [arrival('2026-09-14', 100, 100, 0), arrival('2026-09-15', 900, 900, 0)],
+    [garden('2026-09-14', 10, 0), garden('2026-09-15', 0, 0)],
+    '2026-09-14',
+    '2026-09-15',
+  );
+  assert.equal(weighted.columns[0].current.share, 1); // Not mean(10%, 0%).
+});
+
+await test('Jeju missing dates never produce mismatched ratios or official growth', () => {
+  const s = jeju.calculateJeju(
+    [arrival('2026-09-14'), arrival('2025-09-14'), arrival('2025-09-15')],
+    [garden('2026-09-15'), garden('2025-09-14'), garden('2025-09-15')],
+    '2026-09-14',
+    '2026-09-15',
+  );
+  assert.equal(s.columns[0].current.arrivals.value, 300000);
+  assert.equal(s.columns[0].current.arrivals.entered, 1);
+  assert.equal(s.columns[0].current.share, null);
+  assert.equal(s.columns[0].difference, null);
+  assert.equal(s.columns[0].growth, null);
+  assert.ok(jeju.jejuSummaryRows(s)[0][1].includes('부분 집계'));
+  const totalOnly = jeju.calculateJeju(
+    [arrival('2026-09-14', 300000, null, null)],
+    [garden('2026-09-14')],
+    '2026-09-14',
+    '2026-09-14',
+  );
+  assert.equal(totalOnly.columns[0].current.share, 5);
+  assert.equal(totalOnly.columns[1].current.share, null);
+  assert.equal(totalOnly.columns[0].growth, null);
+});
+
+await test('Jeju handles zero denominators, decreases, invalid ranges and leap periods', () => {
+  const s = jeju.calculateJeju(
+    [arrival('2026-09-14', 0, 0, 0), arrival('2025-09-14', 0, 0, 0)],
+    [garden('2026-09-14', 0, 0), garden('2025-09-14', 0, 0)],
+    '2026-09-14',
+    '2026-09-14',
+  );
+  assert.equal(s.columns[0].difference, 0);
+  assert.equal(s.columns[0].growthReason, '비교 불가(전년 0)');
+  assert.equal(s.columns[0].current.shareReason, '계산 불가(입도객 0)');
+  const down = jeju.calculateJeju(
+    [arrival('2026-09-14', 0, 0, 0), arrival('2025-09-14')],
+    [],
+    '2026-09-14',
+    '2026-09-14',
+  );
+  assert.equal(down.columns[0].growth, -100);
+  const leap = jeju.calculateJeju([], [], '2024-02-28', '2024-02-29');
+  assert.equal(leap.currentDays, 2);
+  assert.equal(leap.previousDays, 1);
+  assert.ok(jeju.jejuPeriodNote(leap).includes('비교 일수가 다릅니다'));
+  assert.equal(jeju.calculateJeju([], [], '', '').currentDays, 0);
+});
+
+await test('Jeju import undo is independent, guards newer edits and preserves final snapshots', () => {
+  const original = arrival('2026-09-14');
+  let store = {
+    ...core.emptyReportStore(),
+    statistics: [garden('2026-09-14')],
+  };
+  store = jeju.applyJejuImport(store, [original], '원본.csv', actor.name);
+  const firstId = store.jejuImports[0].id;
+  const report = core.finalizeReport(
+    core.newReport(data, actor, config, store),
+    store.statistics,
+    store.jejuArrivals,
+  );
+  const corrected = { ...original, total: 310000, domestic: 250000 };
+  store = jeju.applyJejuImport(store, [corrected], '정정.csv', actor.name);
+  assert.throws(() => jeju.undoJejuImport(store, firstId), /이후 수정/);
+  assert.equal(report.jejuArrivals[0].total, 300000);
+  store = jeju.undoJejuImport(store, store.jejuImports[1].id);
+  assert.deepEqual(store.jejuArrivals, [original]);
+  store = jeju.undoJejuImport(store, firstId);
+  assert.deepEqual(store.jejuArrivals, []);
+  assert.deepEqual(store.statistics, [garden('2026-09-14')]);
+  assert.equal(report.jejuArrivals[0].total, 300000);
+  assert.throws(() => jeju.undoJejuImport(store, firstId), /되돌릴/);
+  assert.equal(jeju.validateJejuStore(store), null);
+});
+
+await test('Jeju exports retain three columns, source and placement before composition', async () => {
+  const r = core.finalizeReport(
+    core.newReport(
+      data,
+      actor,
+      { ...config, statsStart: '2026-09-14', statsEnd: '2026-09-14' },
+      core.emptyReportStore(),
+    ),
+    [garden('2026-09-14'), garden('2025-09-14', 13000, 2000)],
+    [arrival('2026-09-14'), arrival('2025-09-14', 280000, 230000, 50000)],
+  );
+  const tables = exporter.reportTables(r);
+  assert.deepEqual(tables.find((t) => t.name === '제주입도객').headers, [
+    '항목',
+    '총 입도객',
+    '내국인 입도객',
+    '외국인 입도객',
+  ]);
+  assert.equal(
+    tables.find((t) => t.name === '제주입도객').rows[8][3],
+    '+1.00%p 증가',
+  );
+  assert.equal(tables.find((t) => t.name === '입도객원본').rows.length, 2);
+  const html = exporter.reportHtml(r);
+  assert.ok(html.indexOf(jeju.jejuTitle) < html.indexOf('입장객구성'));
+  assert.ok(html.includes('+1.00%p 증가'));
+  assert.ok(html.includes('검증용 가상자료'));
+  r.jejuArrivals[0].source = '<script>unsafe()</script>';
+  assert.ok(!exporter.reportHtml(r).includes('<script>unsafe()'));
+  let download;
+  const previousDocument = globalThis.document;
+  const documentMock = {
+    createElement: () => ({
+      click() {
+        download = this.href;
+      },
+    }),
+  };
+  globalThis.document = documentMock;
+  try {
+    await exporter.exportReportExcel(r);
+    const ExcelJS = (await import('exceljs')).default;
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(await (await fetch(download)).arrayBuffer());
+    assert.equal(workbook.worksheets.length, 10);
+    assert.equal(
+      workbook.getWorksheet('제주입도객').getCell('D10').value,
+      '+1.00%p 증가',
+    );
+    assert.equal(
+      workbook.getWorksheet('입도객원본').getCell('B2').value,
+      300000,
+    );
+  } finally {
+    globalThis.document = previousDocument;
+  }
+  const legacy = core.finalizeReport(
+    core.newReport(data, actor, config, core.emptyReportStore()),
+    [],
+  );
+  assert.ok(
+    !exporter.reportTables(legacy).some((t) => t.name === '제주입도객'),
+  );
+  assert.ok(exporter.reportHtml(legacy).includes('입도객 자료 미포함'));
+});
+
+await test('API persists Jeju data, validates history, rejects old-client loss and final edits', async () => {
+  stored = null;
+  let store = jeju.applyJejuImport(
+    core.emptyReportStore(),
+    [arrival('2026-09-14')],
+    '입도객.csv',
+    actor.name,
+  );
+  assert.equal((await put(0, store)).status, 200);
+  const loaded = await (await route.GET(new Request('http://local'))).json();
+  assert.equal(loaded.store.jejuArrivals[0].total, 300000);
+  assert.equal((await put(1, core.emptyReportStore())).status, 409);
+  const invalid = structuredClone(store);
+  invalid.jejuArrivals[0].total = 1;
+  assert.equal((await put(1, invalid)).status, 400);
+  const invalidHistory = structuredClone(store);
+  invalidHistory.jejuImports[0].before = [arrival('2026-09-15')];
+  assert.equal((await put(1, invalidHistory)).status, 400);
+  const duplicate = structuredClone(store);
+  duplicate.jejuArrivals.push(duplicate.jejuArrivals[0]);
+  assert.equal((await put(1, duplicate)).status, 400);
+  const r = core.finalizeReport(
+    core.newReport(data, actor, config, store),
+    [],
+    store.jejuArrivals,
+  );
+  store = core.saveReport(store, r, actor);
+  assert.equal((await put(1, store)).status, 200);
+  const altered = structuredClone(store);
+  altered.reports[0].jejuArrivals[0].source = '변경';
+  assert.equal((await put(2, altered)).status, 409);
 });

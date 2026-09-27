@@ -77,6 +77,24 @@ export type Statistic = {
   groupWelfare: number | null;
   memo: string;
 };
+export type JejuArrival = {
+  date: string;
+  total: number | null;
+  domestic: number | null;
+  foreign: number | null;
+  source: string;
+  asOf: string;
+  status: 'provisional' | 'final';
+};
+export type JejuArrivalImport = {
+  id: string;
+  filename: string;
+  at: string;
+  actor: string;
+  before: (JejuArrival | null)[];
+  after: JejuArrival[];
+  undoneAt?: string;
+};
 export type ReportDocument = {
   id: string;
   ownerId: string;
@@ -93,6 +111,8 @@ export type ReportDocument = {
   finalizedAt?: string;
   metrics: ReportMetric[];
   statistics: Statistic[];
+  jejuArrivals?: JejuArrival[];
+  jejuCalculationVersion?: 1;
   comparisonStart: string;
   comparisonEnd: string;
   templateVersion: 1;
@@ -118,6 +138,8 @@ export type ReportStore = {
   tracks: ReportTrack[];
   statistics: Statistic[];
   imports: StatisticImport[];
+  jejuArrivals?: JejuArrival[];
+  jejuImports?: JejuArrivalImport[];
   archiveLinks: Record<string, string>;
 };
 export type TaskStatusHistory = {

@@ -20,6 +20,7 @@ import {
 import { Button } from '@/components/ui/button';
 import ReportNewsPicker from './report-news-picker';
 import RatioComposition, { DailyVisitorChart } from './report-composition';
+import { JejuReport, JejuImportPanel } from './report-jeju';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import type { Member, NewsItem, Task, WorkspaceState } from '@/lib/types';
 import type {
@@ -32,6 +33,7 @@ import type {
 import {
   calculateMetrics,
   categoryCounts,
+  compareDue,
   completedDay,
   collectReportRows,
   daysBetween,
@@ -180,8 +182,8 @@ export default function ReportsView({
   });
   const [catSort, setCatSort] = useState<Record<ReportRow['section'], boolean>>(
     {
-      before: false,
-      after: false,
+      before: true,
+      after: true,
     },
   );
   const [selected, setSelected] = useState<string[]>([]);
@@ -315,7 +317,9 @@ export default function ReportsView({
     if (!report) return;
     const issue = reportValidation(report);
     if (issue) throw new Error(issue);
-    const document = final ? finalizeReport(report, store.statistics) : report;
+    const document = final
+      ? finalizeReport(report, store.statistics, store.jejuArrivals ?? [])
+      : report;
     const next = saveReport(store, document, actor);
     await persist(next);
     setReport(next.reports.find((r) => r.id === report.id)!);
@@ -501,7 +505,7 @@ export default function ReportsView({
   const effective = () =>
     report.status === 'final'
       ? report
-      : finalizeReport(report, store.statistics);
+      : finalizeReport(report, store.statistics, store.jejuArrivals ?? []);
   return (
     <div className="min-w-0 space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -652,6 +656,7 @@ export default function ReportsView({
         start={report.config.statsStart}
         end={report.config.statsEnd}
       />
+      <JejuReport report={report} store={store} />
       <RatioComposition
         rows={report.status === 'final' ? report.statistics : store.statistics}
         start={report.config.statsStart}
@@ -808,7 +813,9 @@ export default function ReportsView({
               .sort((a, b) =>
                 catSort[section]
                   ? order.indexOf(a.r.category || '기타') -
-                      order.indexOf(b.r.category || '기타') || a.i - b.i
+                      order.indexOf(b.r.category || '기타') ||
+                    compareDue(a.r, b.r) ||
+                    a.i - b.i
                   : a.i - b.i,
               )
               .map(({ r }) => r);
@@ -889,7 +896,7 @@ export default function ReportsView({
                           }))
                         }
                       />
-                      분류별로 모아 보기 (많은 분류 순)
+                      분류별로 모아 보기 (많은 분류 순 · 예정일 빠른 순)
                     </label>
                   </fieldset>
                 )}
@@ -1312,6 +1319,14 @@ export default function ReportsView({
             ))}
         </TabsContent>
         <TabsContent value="metrics" className="space-y-4 pt-3">
+          <JejuImportPanel
+            key={report.id}
+            report={report}
+            store={store}
+            busy={busy}
+            actorName={actor.name}
+            onPersist={persist}
+          />
           <div className={panel}>
             <h3 className="font-bold">날짜별 매출·입장 통계</h3>
             <p className="my-2 text-sm text-[#64776a]">

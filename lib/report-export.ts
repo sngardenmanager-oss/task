@@ -1,7 +1,17 @@
 import type { ReportDocument, ReportRow, Statistic } from './report-types';
 import {
+  jejuForReport,
+  jejuHeaders,
+  jejuNote,
+  jejuPeriodNote,
+  jejuRawRows,
+  jejuSummaryRows,
+  jejuTitle,
+} from './jeju-arrivals';
+import {
   calculateComposition,
   categoryCounts,
+  compareDue,
   completedDay,
   dailyComposition,
   daysBetween,
@@ -47,7 +57,31 @@ export type ReportTable = {
   rows: Cell[][];
   widths: number[];
   tones?: (RowTone | undefined)[];
+  notes?: string[];
 };
+function jejuTables(report: ReportDocument): ReportTable[] {
+  if (report.jejuArrivals === undefined) return [];
+  const summary = jejuForReport(report);
+  return [
+    {
+      name: '제주입도객',
+      headers: ['항목', '총 입도객', '내국인 입도객', '외국인 입도객'],
+      rows: jejuSummaryRows(summary),
+      widths: [34, 22, 22, 22],
+      notes: [
+        jejuPeriodNote(summary),
+        jejuNote,
+        '자료 출처: ' + (summary.sources.join(' / ') || '자료 없음'),
+      ],
+    },
+    {
+      name: '입도객원본',
+      headers: jejuHeaders,
+      rows: jejuRawRows(report.jejuArrivals),
+      widths: [13, 12, 12, 12, 25, 13, 10],
+    },
+  ];
+}
 const palette = {
   head: '2F6B4F',
   line: 'BCCBC0',
@@ -127,7 +161,7 @@ export function reportTables(report: ReportDocument): ReportTable[] {
   const toneName = (n: ReportDocument['news'][number]) =>
     n.tone === 'positive' ? '긍정' : n.tone === 'negative' ? '부정' : '미분류';
   const news = sortNews(report.news);
-  // 같은 분류를 모아 많은 분류부터 보여준다. 분류 안에서는 작성 순서를 지킨다.
+  // 같은 분류를 모아 많은 분류부터, 분류 안에서는 예정일 빠른 순(일정 미정은 뒤)으로 보여준다.
   const bySection = (section: ReportRow['section']) => {
     const rows = visible.filter((r) => r.section === section);
     const order = categoryCounts(rows).map(([name]) => name);
@@ -136,7 +170,9 @@ export function reportTables(report: ReportDocument): ReportTable[] {
       .sort(
         (a, b) =>
           order.indexOf(a.r.category || '기타') -
-            order.indexOf(b.r.category || '기타') || a.i - b.i,
+            order.indexOf(b.r.category || '기타') ||
+          compareDue(a.r, b.r) ||
+          a.i - b.i,
       )
       .map(({ r }) => r);
   };
@@ -330,6 +366,7 @@ export function reportTables(report: ReportDocument): ReportTable[] {
       }),
       widths: [12, 14, 14, 13, 9, 9, 15, 7, 7],
     },
+    ...jejuTables(report),
     {
       name: '입장객구성',
       headers: [
@@ -496,6 +533,16 @@ export async function exportReportExcel(report: ReportDocument) {
       }
       row.height = Math.min(409, Math.max(20, lines * 14 + 4));
     });
+    for (const note of table.notes ?? []) {
+      const row = sheet.addRow([note]);
+      sheet.mergeCells(row.number, 1, row.number, table.headers.length);
+      row.getCell(1).font = font({ color: { argb: 'FF64776A' } });
+      row.getCell(1).alignment = { wrapText: true, vertical: 'middle' };
+      row.height = Math.min(
+        409,
+        Math.max(28, Math.ceil(note.length / 65) * 16),
+      );
+    }
     sheet.pageSetup.printArea =
       'A1:' + sheet.getColumn(table.headers.length).letter + sheet.rowCount;
     sheet.headerFooter.oddFooter =
@@ -520,7 +567,7 @@ const escapeHtml = (v: string | number | null) =>
 const badge = (c: { bg: string; fg: string }) =>
   ' style="background:#' + c.bg + ';color:#' + c.fg + ';font-weight:700"';
 const reportCss =
-  '@page{size:A4 landscape;margin:8mm 9mm;@bottom-center{content:counter(page) " / " counter(pages)}}' +
+  '@page{size:A4 portrait;margin:9mm 8mm;@bottom-center{content:counter(page) " / " counter(pages)}}' +
   '*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
   'body{margin:0;font:10.5px/1.45 "Malgun Gothic",sans-serif;color:#' +
   palette.ink +
@@ -576,9 +623,9 @@ const reportCss =
 // 아랫줄은 아래부터 내국인 개인 → 내국인 단체 → 외국인 단체 → 외국인 개인으로 쌓아
 // 윗줄의 내국인·외국인 경계와 맞고, 단체(내국인+외국인)는 가운데에 이어서 보인다.
 export const dailyColors = {
-  domestic: '#6B7D71',
-  foreign: '#1B5E9E',
-  parts: ['#8A968E', '#2F6B4F', '#1B5E9E', '#D9822B'],
+  domestic: '#3F8F66',
+  foreign: '#2B6CB0',
+  parts: ['#58B97C', '#1A7D49', '#3D97E6', '#4B47C2'],
 };
 export const dailyLabels = {
   domestic: '내국인',
@@ -703,7 +750,7 @@ export function reportHtml(report: ReportDocument) {
       );
     })
     .join('');
-  const partColors = ['#8A968E', '#2F6B4F', '#1B5E9E', '#D9822B'];
+  const partColors = dailyColors.parts;
   const parts = compositionOf(report);
   const barReady = parts.every((p) => p.currentShare !== null);
   // 겹치지 않는 네 구분을 한 줄로 쌓고, 단체·외국인 구성비가 어디까지인지 괄호로 표시한다.
@@ -749,7 +796,10 @@ export function reportHtml(report: ReportDocument) {
     const rows = t.rows
       .map((row, i) => ({ row, tone: t.tones?.[i] }))
       .filter(({ tone }) => tone !== 'metric');
-    const head = '<section><h2>' + escapeHtml(t.name) + '</h2>';
+    const head =
+      '<section><h2>' +
+      escapeHtml(t.name === '제주입도객' ? jejuTitle : t.name) +
+      '</h2>';
     if (!rows.length)
       return head + '<p class="empty">표시할 항목이 없습니다.</p></section>';
     const weight = t.widths.reduce((a, b) => a + b, 0);
@@ -800,7 +850,11 @@ export function reportHtml(report: ReportDocument) {
       t.headers.map((h) => '<th>' + escapeHtml(h) + '</th>').join('') +
       '</tr></thead><tbody>' +
       body +
-      '</tbody></table></section>'
+      '</tbody></table>' +
+      (t.notes ?? [])
+        .map((note) => '<p class="meta">' + escapeHtml(note) + '</p>')
+        .join('') +
+      '</section>'
     );
   };
   return (
@@ -821,8 +875,17 @@ export function reportHtml(report: ReportDocument) {
     '</p>' +
     (cards ? '<div class="cards">' + cards + '</div>' : '') +
     dailyChartHtml(report) +
+    (report.jejuArrivals === undefined
+      ? '<p class="meta">제주 입도객 자료 미포함 · 기존 확정본</p>'
+      : jejuTables(report)
+          .filter((t) => t.name === '제주입도객')
+          .map(section)
+          .join('')) +
     compositionBar +
-    reportTables(report).map(section).join('') +
+    reportTables(report)
+      .filter((t) => t.name !== '제주입도객')
+      .map(section)
+      .join('') +
     '</body></html>'
   );
 }

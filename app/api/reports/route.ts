@@ -13,6 +13,7 @@ import {
   sameReportValue,
 } from '@/lib/reports';
 import type { ReportStore } from '@/lib/report-types';
+import { validateJejuStore } from '@/lib/jeju-arrivals';
 
 export const dynamic = 'force-dynamic';
 const headers = { 'cache-control': 'private, no-store, max-age=0' };
@@ -77,6 +78,8 @@ export async function PUT(request: Request) {
       throw new ApiError('보고서 데이터 형식이 올바르지 않습니다.', 400);
     if (new Set(store.reports.map((r) => r.id)).size !== store.reports.length)
       throw new ApiError('보고서 번호가 중복되었습니다.', 400);
+    const jejuIssue = validateJejuStore(store);
+    if (jejuIssue) throw new ApiError(jejuIssue, 400);
     for (const report of store.reports) {
       if (report.ownerId !== actor.id)
         throw new ApiError('본인이 작성한 보고서만 저장할 수 있습니다.', 403);
@@ -107,6 +110,17 @@ export async function PUT(request: Request) {
     if ((before?.version ?? 0) !== input.version)
       throw new ApiError(
         '다른 창에서 변경되었습니다. 현재 작성 내용은 유지됩니다. 서버 자료를 다시 불러온 뒤 반영해 주세요.',
+        409,
+      );
+    const previousStore = before?.payload as ReportStore | undefined;
+    if (
+      (previousStore?.jejuArrivals !== undefined &&
+        store.jejuArrivals === undefined) ||
+      (previousStore?.jejuImports !== undefined &&
+        store.jejuImports === undefined)
+    )
+      throw new ApiError(
+        '입도객 자료가 누락되었습니다. 최신 화면을 다시 불러온 뒤 저장해 주세요.',
         409,
       );
     for (const report of (before?.payload as ReportStore | undefined)

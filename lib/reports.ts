@@ -371,6 +371,7 @@ export function saveReport(
 export function finalizeReport(
   report: ReportDocument,
   statistics: Statistic[],
+  jejuArrivals?: import('./report-types').JejuArrival[],
 ): ReportDocument {
   const config = report.config;
   const metrics = calculateMetrics(
@@ -387,6 +388,18 @@ export function finalizeReport(
     metrics,
     comparisonStart: ps,
     comparisonEnd: pe,
+    ...(jejuArrivals === undefined
+      ? {}
+      : {
+          jejuCalculationVersion: 1 as const,
+          jejuArrivals: structuredClone(
+            jejuArrivals.filter(
+              (s) =>
+                (s.date >= config.statsStart && s.date <= config.statsEnd) ||
+                (s.date >= ps && s.date <= pe),
+            ),
+          ),
+        }),
     statistics: structuredClone(
       statistics.filter(
         (s) =>
@@ -754,6 +767,11 @@ export function sortNews<T extends { tone?: string; collectedAt: string }>(
         a.i - b.i,
     )
     .map(({ n }) => n);
+}
+// 예정일 빠른 순. 일정 미정은 맨 뒤.
+export function compareDue(a: { date: string }, b: { date: string }) {
+  if (!a.date || !b.date) return (a.date ? 0 : 1) - (b.date ? 0 : 1);
+  return a.date.localeCompare(b.date);
 }
 // 보고 분류별 건수. 많은 순으로, 같으면 먼저 나온 분류 순.
 export function categoryCounts(rows: { category: string }[]) {
