@@ -45,6 +45,7 @@ import {
   previewStatistics,
   reportId,
   reportValidation,
+  sameReportValue,
   saveReport,
   scopeKey,
   shiftDay,
@@ -219,9 +220,14 @@ export default function ReportsView({
       setStore(body.store);
       setVersion(body.version);
       setLoaded(true);
+      // 저장소는 팀이 함께 쓴다. 팀 범위 초안과 내가 쓴 "내 업무" 초안 중 가장 최근 것을 연다.
       setReport(
         body.store.reports
-          .filter((r: ReportDocument) => r.status === 'draft')
+          .filter(
+            (r: ReportDocument) =>
+              r.status === 'draft' &&
+              (r.config.scope === 'team' || r.ownerId === actor.id),
+          )
           .sort((a: ReportDocument, b: ReportDocument) =>
             b.updatedAt.localeCompare(a.updatedAt),
           )[0] ??
@@ -243,6 +249,15 @@ export default function ReportsView({
     const timer = window.setTimeout(() => loadInitial(), 0);
     return () => window.clearTimeout(timer);
   }, [active, loaded]); // Load once on first entry; preserve editing when switching main tabs.
+  const reloadShared = useEffectEvent(() => {
+    // 다른 사람이 저장한 초안·경영 지표를 보이도록, 저장하지 않은 변경이 없을 때만 다시 불러온다.
+    if (loaded && !dirty && !busy) void load();
+  });
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setTimeout(() => reloadShared(), 0);
+    return () => window.clearTimeout(timer);
+  }, [active]);
   useEffect(() => {
     if (!dirty) return;
     const handler = (e: BeforeUnloadEvent) => {
@@ -262,7 +277,20 @@ export default function ReportsView({
           authorization: 'Bearer ' + accessToken,
           'content-type': 'application/json',
         },
-        body: JSON.stringify({ version, store: next }),
+        // 팀 저장소는 서버가 병합한다. 내가 바꾼 보고서마다 내가 마지막으로 본 서버 값을 함께 보낸다.
+        body: JSON.stringify({
+          version,
+          store: next,
+          bases: {
+            reports: Object.fromEntries(
+              next.reports
+                .map((r) => [r, store.reports.find((b) => b.id === r.id)] as const)
+                .filter(([r, b]) => !sameReportValue(r, b))
+                .map(([r, b]) => [r.id, b ?? null]),
+            ),
+            archiveLinks: store.archiveLinks,
+          },
+        }),
       });
       const body = (await response.json()) as {
         error?: string;
@@ -321,8 +349,9 @@ export default function ReportsView({
       ? finalizeReport(report, store.statistics, store.jejuArrivals ?? [])
       : report;
     const next = saveReport(store, document, actor);
-    await persist(next);
-    setReport(next.reports.find((r) => r.id === report.id)!);
+    const saved = await persist(next);
+    // 다른 사람이 같은 초안에 저장한 체크·문구가 병합되어 돌아온다.
+    setReport(saved.reports.find((r) => r.id === report.id)!);
     setDirty(false);
     setMessage(
       final ? '보고본을 확정하여 보관했습니다.' : '초안을 저장했습니다.',
@@ -757,7 +786,7 @@ export default function ReportsView({
               </p>
               {store.tracks
                 .filter(
-                  (t) => t.closed && t.scopeKey === scopeKey(report.config),
+                  (t) => t.closed && t.scopeKey === scopeKey(report.config, report.ownerId),
                 )
                 .map((t) => (
                   <div

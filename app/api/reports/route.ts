@@ -6,12 +6,14 @@ import {
 } from '@/lib/auth-server';
 import { getSupabaseAdmin, isSupabaseConfigured } from '@/lib/supabase-server';
 import { readWorkspaceState } from '@/lib/workspace-store';
+import { reportValidation, validateStatistic } from '@/lib/reports';
 import {
-  emptyReportStore,
-  reportValidation,
-  validateStatistic,
-  sameReportValue,
-} from '@/lib/reports';
+  migrateOwnerStores,
+  mergeSharedStore,
+  ReportShareError,
+  TEAM_REPORT_OWNER,
+  type ReportSaveBases,
+} from '@/lib/report-share';
 import type { ReportStore } from '@/lib/report-types';
 import { validateJejuStore } from '@/lib/jeju-arrivals';
 
@@ -38,135 +40,125 @@ function storeError(message: string): never {
     503,
   );
 }
+type StoredRow = { owner_id: string; version: number; payload: ReportStore; updated_at?: string };
+
+/** 팀 공용 보고서 저장소를 읽습니다. 처음 한 번은 예전 작성자별 저장소를 합쳐 만듭니다(예전 행은 그대로 둔다). */
+async function readTeamStore(): Promise<{ version: number; store: ReportStore }> {
+  const db = getSupabaseAdmin();
+  const { data, error } = await db
+    .from('weekly_report_state')
+    .select('owner_id,version,payload')
+    .eq('owner_id', TEAM_REPORT_OWNER)
+    .maybeSingle<StoredRow>();
+  if (error) storeError(error.message);
+  if (data) return { version: data.version, store: data.payload };
+  const { data: legacy, error: legacyError } = await db
+    .from('weekly_report_state')
+    .select('owner_id,version,payload,updated_at')
+    .neq('owner_id', TEAM_REPORT_OWNER);
+  if (legacyError) storeError(legacyError.message);
+  const store = migrateOwnerStores((legacy ?? []) as StoredRow[]);
+  const { error: insertError } = await db.from('weekly_report_state').insert({
+    owner_id: TEAM_REPORT_OWNER,
+    version: 1,
+    payload: store,
+    updated_at: new Date().toISOString(),
+  });
+  // 동시에 다른 요청이 먼저 만들었으면 그 값을 다시 읽는다.
+  if (insertError?.code === '23505') return readTeamStore();
+  if (insertError) storeError(insertError.message);
+  return { version: 1, store };
+}
+
 export async function GET(request: Request) {
   try {
-    const actor = await context(request);
-    const { data, error } = await getSupabaseAdmin()
-      .from('weekly_report_state')
-      .select('version,payload')
-      .eq('owner_id', actor.id)
-      .maybeSingle();
-    if (error) storeError(error.message);
-    return Response.json(
-      {
-        store: data?.payload ?? emptyReportStore(),
-        version: data?.version ?? 0,
-      },
-      { headers },
-    );
+    await context(request);
+    const { version, store } = await readTeamStore();
+    return Response.json({ store, version }, { headers });
   } catch (error) {
     return apiErrorResponse(error, '보고서를 불러오지 못했습니다.');
   }
 }
+
+function validateStore(store: ReportStore) {
+  if (new Set(store.reports.map((r) => r.id)).size !== store.reports.length)
+    throw new ApiError('보고서 번호가 중복되었습니다.', 400);
+  const jejuIssue = validateJejuStore(store);
+  if (jejuIssue) throw new ApiError(jejuIssue, 400);
+  for (const report of store.reports) {
+    const issue = reportValidation(report);
+    if (issue) throw new ApiError(issue, 400);
+    if (
+      !['draft', 'final'].includes(report.status) ||
+      report.templateVersion !== 1
+    )
+      throw new ApiError('지원하지 않는 보고서 형식입니다.', 400);
+  }
+  if (
+    new Set(store.statistics.map((s) => s.date)).size !==
+      store.statistics.length ||
+    store.statistics.some((s) => validateStatistic(s).length)
+  )
+    throw new ApiError('통계 날짜 또는 값을 확인해 주세요.', 400);
+  for (const link of Object.values(store.archiveLinks))
+    if (typeof link !== 'string' || (link && !/^https?:\/\//i.test(link)))
+      throw new ApiError('외부 보관 링크 형식을 확인해 주세요.', 400);
+}
+
+/** 저장은 팀 저장소 전체를 덮어쓰지 않고, 요청자가 바꾼 부분만 최신 서버 값에 병합한다.
+ * 그 사이 다른 사람이 저장해 버전이 바뀌었으면 다시 읽어 병합을 반복한다. */
 export async function PUT(request: Request) {
   try {
     const actor = await context(request);
     const body = await request.text();
     if (body.length > 12_000_000)
       throw new ApiError('보고서 저장량이 요청 한도를 넘었습니다.', 413);
-    const input = JSON.parse(body) as { version: number; store: ReportStore };
-    const store = input.store;
+    const input = JSON.parse(body) as {
+      version: number;
+      store: ReportStore;
+      bases?: ReportSaveBases;
+    };
+    const incoming = input.store;
     if (
-      !store ||
-      !Number.isInteger(input.version) ||
-      !Array.isArray(store.reports) ||
-      !Array.isArray(store.tracks) ||
-      !Array.isArray(store.statistics) ||
-      !Array.isArray(store.imports) ||
-      !store.archiveLinks
+      !incoming ||
+      !Array.isArray(incoming.reports) ||
+      !Array.isArray(incoming.tracks) ||
+      !Array.isArray(incoming.statistics) ||
+      !Array.isArray(incoming.imports) ||
+      !incoming.archiveLinks
     )
       throw new ApiError('보고서 데이터 형식이 올바르지 않습니다.', 400);
-    if (new Set(store.reports.map((r) => r.id)).size !== store.reports.length)
-      throw new ApiError('보고서 번호가 중복되었습니다.', 400);
-    const jejuIssue = validateJejuStore(store);
-    if (jejuIssue) throw new ApiError(jejuIssue, 400);
-    for (const report of store.reports) {
-      if (report.ownerId !== actor.id)
-        throw new ApiError('본인이 작성한 보고서만 저장할 수 있습니다.', 403);
-      const issue = reportValidation(report);
-      if (issue) throw new ApiError(issue, 400);
-      if (
-        !['draft', 'final'].includes(report.status) ||
-        report.templateVersion !== 1
-      )
-        throw new ApiError('지원하지 않는 보고서 형식입니다.', 400);
-    }
-    if (
-      new Set(store.statistics.map((s) => s.date)).size !==
-        store.statistics.length ||
-      store.statistics.some((s) => validateStatistic(s).length)
-    )
-      throw new ApiError('통계 날짜 또는 값을 확인해 주세요.', 400);
-    for (const link of Object.values(store.archiveLinks))
-      if (typeof link !== 'string' || (link && !/^https?:\/\//i.test(link)))
-        throw new ApiError('외부 보관 링크 형식을 확인해 주세요.', 400);
     const db = getSupabaseAdmin();
-    const { data: before, error: readError } = await db
-      .from('weekly_report_state')
-      .select('version,payload')
-      .eq('owner_id', actor.id)
-      .maybeSingle();
-    if (readError) storeError(readError.message);
-    if ((before?.version ?? 0) !== input.version)
-      throw new ApiError(
-        '다른 창에서 변경되었습니다. 현재 작성 내용은 유지됩니다. 서버 자료를 다시 불러온 뒤 반영해 주세요.',
-        409,
-      );
-    const previousStore = before?.payload as ReportStore | undefined;
-    if (
-      (previousStore?.jejuArrivals !== undefined &&
-        store.jejuArrivals === undefined) ||
-      (previousStore?.jejuImports !== undefined &&
-        store.jejuImports === undefined)
-    )
-      throw new ApiError(
-        '입도객 자료가 누락되었습니다. 최신 화면을 다시 불러온 뒤 저장해 주세요.',
-        409,
-      );
-    for (const report of (before?.payload as ReportStore | undefined)
-      ?.reports ?? [])
-      if (
-        report.status === 'final' &&
-        !sameReportValue(
-          report,
-          store.reports.find((r) => r.id === report.id),
-        )
-      )
-        throw new ApiError(
-          '확정본은 변경하거나 삭제할 수 없습니다. 수정본을 작성해 주세요.',
-          409,
-        );
-    const version = input.version + 1;
-    const value = {
-      owner_id: actor.id,
-      version,
-      payload: store,
-      updated_at: new Date().toISOString(),
-    };
-    if (!before) {
-      const { error } = await db.from('weekly_report_state').insert(value);
-      if (error?.code === '23505')
-        throw new ApiError(
-          '다른 창에서 먼저 저장했습니다. 다시 불러와 주세요.',
-          409,
-        );
-      if (error) storeError(error.message);
-    } else {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const before = await readTeamStore();
+      let store: ReportStore;
+      try {
+        store = mergeSharedStore(before.store, incoming, input.bases ?? {}, actor);
+      } catch (error) {
+        if (error instanceof ReportShareError)
+          throw new ApiError(error.message, error.status);
+        throw error;
+      }
+      validateStore(store);
+      const version = before.version + 1;
       const { data, error } = await db
         .from('weekly_report_state')
-        .update(value)
-        .eq('owner_id', actor.id)
-        .eq('version', input.version)
+        .update({
+          version,
+          payload: store,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('owner_id', TEAM_REPORT_OWNER)
+        .eq('version', before.version)
         .select('version')
         .maybeSingle();
       if (error) storeError(error.message);
-      if (!data)
-        throw new ApiError(
-          '동시에 수정된 자료가 있습니다. 다시 불러와 주세요.',
-          409,
-        );
+      if (data) return Response.json({ version, store }, { headers });
     }
-    return Response.json({ version, store }, { headers });
+    throw new ApiError(
+      '여러 사람이 동시에 저장하고 있습니다. 잠시 후 다시 저장해 주세요.',
+      409,
+    );
   } catch (error) {
     if (error instanceof SyntaxError)
       return Response.json(

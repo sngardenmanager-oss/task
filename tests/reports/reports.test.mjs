@@ -193,7 +193,7 @@ await test('linked manual and converted note items keep one tracking ID', () => 
   const tracks = [row, note].map((row) => ({
     id: row.id,
     row,
-    scopeKey: 'mine',
+    scopeKey: 'mine:' + actor.id,
     closed: false,
     history: [],
   }));
@@ -602,6 +602,10 @@ const harness = {
       let update;
       const query = {
         select: () => query,
+        // 예전 작성자별 행 조회(팀 저장소 최초 생성 때만 사용): 테스트에는 없음
+        neq: () => ({
+          then: (resolve) => resolve({ data: [], error: null }),
+        }),
         eq: (k, v) => {
           filters[k] = v;
           return query;
@@ -654,6 +658,28 @@ routeSource = routeSource.replace(
   "from '@/lib/jeju-arrivals'",
   'from ' + JSON.stringify(jejuUrl),
 );
+const shareUrl =
+  'data:text/javascript;base64,' +
+  Buffer.from(
+    ts.transpileModule(
+      (
+        await fs.readFile(
+          new URL('../../lib/report-share.ts', import.meta.url),
+          'utf8',
+        )
+      ).replace("from './reports'", 'from ' + JSON.stringify(coreUrl)),
+      {
+        compilerOptions: {
+          module: ts.ModuleKind.ESNext,
+          target: ts.ScriptTarget.ES2022,
+        },
+      },
+    ).outputText,
+  ).toString('base64');
+routeSource = routeSource.replace(
+  "from '@/lib/report-share'",
+  'from ' + JSON.stringify(shareUrl),
+);
 const route = await import(
   'data:text/javascript;base64,' +
     Buffer.from(
@@ -681,14 +707,18 @@ await test('API rejects unauthenticated and commenter reads and writes', async (
   assert.equal((await put(0, core.emptyReportStore())).status, 403);
   apiActor = actor;
 });
-await test('API persists drafts, detects conflict and preserves finalized snapshots', async () => {
+await test('API merges saves into the team store and preserves finalized snapshots', async () => {
   stored = null;
   const draft = core.newReport(data, actor, config, core.emptyReportStore());
   let store = core.saveReport(core.emptyReportStore(), draft, actor);
   assert.equal((await put(0, store)).status, 200);
-  assert.equal((await put(0, store)).status, 409);
+  // 팀 저장소는 버전이 달라도 거절하지 않고 병합한다.
+  assert.equal((await put(0, store)).status, 200);
   store = core.saveReport(store, core.finalizeReport(draft, []), actor);
-  assert.equal((await put(1, store)).status, 200);
+  const finalized = await put(1, store);
+  assert.equal(finalized.status, 200);
+  // 화면은 서버가 돌려준 저장소를 이어서 쓴다.
+  store = (await finalized.json()).store;
   stored.payload = JSON.parse(
     JSON.stringify(stored.payload, (_k, v) =>
       v && typeof v === 'object' && !Array.isArray(v)
@@ -700,7 +730,9 @@ await test('API persists drafts, detects conflict and preserves finalized snapsh
   const tampered = structuredClone(store);
   tampered.reports[0].config.title = '변조';
   assert.equal((await put(3, tampered)).status, 409);
-  assert.equal((await put(3, { ...store, reports: [] })).status, 409);
+  // 요청에 빠진 보고서는 지우지 않는다.
+  assert.equal((await put(3, { ...store, reports: [] })).status, 200);
+  assert.equal(stored.payload.reports[0].status, 'final');
 });
 await test('API prevents cross-author writes and unsafe archive links', async () => {
   stored = null;
@@ -1015,16 +1047,20 @@ await test('API persists Jeju data, validates history, rejects old-client loss a
   assert.equal((await put(0, store)).status, 200);
   const loaded = await (await route.GET(new Request('http://local'))).json();
   assert.equal(loaded.store.jejuArrivals[0].total, 300000);
-  assert.equal((await put(1, core.emptyReportStore())).status, 409);
-  const invalid = structuredClone(store);
-  invalid.jejuArrivals[0].total = 1;
+  // 예전 화면(빈 저장소)으로 저장해도 팀이 공유하는 입도객 자료는 지워지지 않는다.
+  assert.equal((await put(1, core.emptyReportStore())).status, 200);
+  assert.equal(stored.payload.jejuArrivals[0].total, 300000);
+  // 서버는 업로드 기록으로 들어온 값만 반영하고, 잘못된 업로드는 거절한다.
+  const invalid = jeju.applyJejuImport(store, [arrival('2026-09-15')], 'x.csv', actor.name);
+  invalid.jejuImports.at(-1).after[0].total = 1;
   assert.equal((await put(1, invalid)).status, 400);
-  const invalidHistory = structuredClone(store);
-  invalidHistory.jejuImports[0].before = [arrival('2026-09-15')];
+  const invalidHistory = jeju.applyJejuImport(store, [arrival('2026-09-15')], 'x.csv', actor.name);
+  invalidHistory.jejuImports.at(-1).before = [];
   assert.equal((await put(1, invalidHistory)).status, 400);
-  const duplicate = structuredClone(store);
-  duplicate.jejuArrivals.push(duplicate.jejuArrivals[0]);
+  const duplicate = jeju.applyJejuImport(store, [arrival('2026-09-15')], 'x.csv', actor.name);
+  duplicate.jejuImports.at(-1).after.push(arrival('2026-09-15'));
   assert.equal((await put(1, duplicate)).status, 400);
+  assert.equal(stored.payload.jejuArrivals.length, 1);
   const r = core.finalizeReport(
     core.newReport(data, actor, config, store),
     [],

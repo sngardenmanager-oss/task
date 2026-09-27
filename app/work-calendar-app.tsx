@@ -49,6 +49,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import ReportsView from '@/app/reports-view';
+import { buildCalendarIcs } from '@/lib/ical';
 import type {
   Category,
   Comment,
@@ -109,6 +110,9 @@ const appHistoryKey = '__snoopyWorkCalendar';
  * 협업자로 지정된 업무만 오늘/지연/D-day 목록에서 보게 됩니다. */
 const FULL_ACCESS_EMAIL = 'sn.gardenmanager@gmail.com';
 
+/** 오늘 탭과 관광뉴스 탭에 보여줄 최근 뉴스 기간(일). 서버에는 보고서용으로 14일치가 저장됩니다. */
+const NEWS_RECENT_DAYS = 10;
+
 function isTaskVisibleTo(task: Task, member: Pick<Member, 'id' | 'email'>) {
   return (
     member.email === FULL_ACCESS_EMAIL ||
@@ -154,7 +158,7 @@ const viewMeta: Record<
   news: {
     label: '관광뉴스',
     icon: Newspaper,
-    subtitle: '최근 3일 이내 관광 관련 문서를 모아봅니다.',
+    subtitle: '최근 10일 이내 관광 관련 문서를 모아봅니다.',
   },
   reports: {
     label: '보고서',
@@ -577,89 +581,11 @@ function defaultAssigneeId(data: WorkspaceState, actor: Member) {
       )?.id ?? actor.id);
 }
 
-function icalEscape(value: string) {
-  return value
-    .replaceAll('\\', '\\\\')
-    .replaceAll(';', '\\;')
-    .replaceAll(',', '\\,')
-    .replace(/\r?\n/g, '\\n');
-}
-
-function icalDate(value: string) {
-  return value.replaceAll('-', '');
-}
-
 function exportCalendarIcal(data: WorkspaceState) {
-  const stamp = new Date()
-    .toISOString()
-    .replace(/[-:]/g, '')
-    .replace(/\.\d{3}Z$/, 'Z');
-  const events = data.tasks.flatMap((task) => {
-    const category =
-      data.categories.find((item) => item.id === task.categoryId)?.name ?? '';
-    const names = assigneeNames(task, data);
-    const description = [
-      task.description,
-      names.length ? `담당자: ${names.join(', ')}` : '',
-      ...task.checklist.map((item) => `${item.done ? '✓' : '□'} ${item.text}`),
-    ]
-      .filter(Boolean)
-      .join('\n');
-    return [
-      'BEGIN:VEVENT',
-      `UID:${icalEscape(task.id)}@snoopygarden.work`,
-      `DTSTAMP:${stamp}`,
-      `DTSTART;VALUE=DATE:${icalDate(task.date)}`,
-      `DTEND;VALUE=DATE:${icalDate(shiftIsoDate(task.endDate ?? task.date, 1))}`,
-      `SUMMARY:${icalEscape(`${projectTag(data.tasks, task)}${task.title}`)}`,
-      `DESCRIPTION:${icalEscape(description)}`,
-      category ? `CATEGORIES:${icalEscape(category)}` : '',
-      `STATUS:${task.status === 'completed' ? 'COMPLETED' : 'CONFIRMED'}`,
-      'END:VEVENT',
-    ]
-      .filter(Boolean)
-      .join('\r\n');
-  });
-  const routines = data.routines
-    .filter((routine) => routine.active)
-    .map((routine) => {
-      const rule = /매일/.test(routine.cadence)
-        ? 'FREQ=DAILY'
-        : /격주|2주/.test(routine.cadence)
-          ? 'FREQ=WEEKLY;INTERVAL=2'
-          : /매주|주간|주 1회/.test(routine.cadence)
-            ? 'FREQ=WEEKLY'
-            : /매월|월간|월 1회/.test(routine.cadence)
-              ? 'FREQ=MONTHLY'
-              : '';
-      return [
-        'BEGIN:VEVENT',
-        `UID:${icalEscape(routine.id)}@snoopygarden.routine`,
-        `DTSTAMP:${stamp}`,
-        `DTSTART;VALUE=DATE:${icalDate(routine.nextDate)}`,
-        `DTEND;VALUE=DATE:${icalDate(shiftIsoDate(routine.nextDate, 1))}`,
-        `SUMMARY:${icalEscape(`[루틴] ${routine.title}`)}`,
-        `DESCRIPTION:${icalEscape([routine.cadence, ...routineChecklistWithLinks(routine)].join('\n'))}`,
-        rule ? `RRULE:${rule}` : '',
-        'END:VEVENT',
-      ]
-        .filter(Boolean)
-        .join('\r\n');
-    });
-  const contents = [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'PRODID:-//Snoopy Garden//Work Calendar//KO',
-    'CALSCALE:GREGORIAN',
-    'METHOD:PUBLISH',
-    'X-WR-CALNAME:스누피가든 업무캘린더',
-    ...events,
-    ...routines,
-    'END:VCALENDAR',
-    '',
-  ].join('\r\n');
   downloadBlob(
-    new Blob([contents], { type: 'text/calendar;charset=utf-8' }),
+    new Blob([buildCalendarIcs(data, '스누피가든 업무캘린더')], {
+      type: 'text/calendar;charset=utf-8',
+    }),
     `스누피가든_업무캘린더_${isoDate()}.ics`,
   );
 }
@@ -897,7 +823,7 @@ export default function WorkCalendarApp({
     const controller = new AbortController();
     void (async () => {
       try {
-        const response = await fetch('/api/news?limit=10', {
+        const response = await fetch('/api/news?limit=50', {
           headers: { authorization: `Bearer ${accessToken}` },
           cache: 'no-store',
           signal: controller.signal,
@@ -954,7 +880,7 @@ export default function WorkCalendarApp({
       }
       if (!response.ok) {
         setToast(
-          digestResult.error ?? '최근 3일 관광뉴스를 정리하지 못했습니다.',
+          digestResult.error ?? '최근 관광뉴스를 정리하지 못했습니다.',
         );
         return;
       }
@@ -2095,6 +2021,7 @@ export default function WorkCalendarApp({
               openCreateTask={openCreateTask}
               refresh={refreshWorkspace}
               refreshing={refreshing}
+              accessToken={accessToken}
             />
           )}
           {view === 'tasks' && (
@@ -2595,7 +2522,7 @@ function TodayView({
   const recentNews = news
     .filter((item) => {
       const age = dayDifference(item.collectedAt, isoDate());
-      return age >= 0 && age <= 2;
+      return age >= 0 && age <= NEWS_RECENT_DAYS - 1;
     })
     .sort((a, b) => b.collectedAt.localeCompare(a.collectedAt));
   const metrics: {
@@ -2847,7 +2774,7 @@ function TodayView({
             ))}
           </div>
         ) : (
-          <Empty title="최근 3일 이내 등록된 관광뉴스가 없습니다." />
+          <Empty title="최근 10일 이내 등록된 관광뉴스가 없습니다." />
         )}
       </section>
       <div className="hidden lg:block">
@@ -2987,6 +2914,7 @@ function CalendarView({
   openCreateTask,
   refresh,
   refreshing,
+  accessToken,
 }: {
   data: WorkspaceState;
   tasks: Task[];
@@ -2997,8 +2925,10 @@ function CalendarView({
   openCreateTask: (date?: string, time?: string | null) => void;
   refresh: () => Promise<void>;
   refreshing: boolean;
+  accessToken: string;
 }) {
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
+  const [subscribing, setSubscribing] = useState(false);
   const [viewMode, setViewMode] = useState<'month' | 'week'>('month');
   const year = month.getFullYear();
   const monthIndex = month.getMonth();
@@ -3082,6 +3012,14 @@ function CalendarView({
           >
             <Download />
             <span className="hidden sm:inline">iCal</span>
+          </Button>
+          <Button
+            variant="outline"
+            className="rounded-xl bg-white px-2 sm:px-3"
+            onClick={() => setSubscribing(true)}
+          >
+            <Link2 />
+            <span className="hidden sm:inline">구글 구독</span>
           </Button>
           <Button
             variant="outline"
@@ -3259,7 +3197,92 @@ function CalendarView({
           openRoutine={openRoutine}
         />
       )}
+      {subscribing && (
+        <CalendarSubscribeModal
+          accessToken={accessToken}
+          close={() => setSubscribing(false)}
+        />
+      )}
     </article>
+  );
+}
+
+/** 구글 캘린더에 "URL로 추가"할 구독 주소를 보여줍니다. 주소는 사용자별로 서명되어 있습니다. */
+function CalendarSubscribeModal({
+  accessToken,
+  close,
+}: {
+  accessToken: string;
+  close: () => void;
+}) {
+  const [url, setUrl] = useState('');
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch('/api/calendar/link', {
+          headers: { authorization: `Bearer ${accessToken}` },
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        const result = (await response.json()) as { url?: string; error?: string };
+        if (!response.ok || !result.url)
+          throw new Error(result.error ?? '구독 링크를 만들지 못했습니다.');
+        setUrl(result.url);
+      } catch (e) {
+        if (controller.signal.aborted) return;
+        setError(e instanceof Error ? e.message : '구독 링크를 만들지 못했습니다.');
+      }
+    })();
+    return () => controller.abort();
+  }, [accessToken]);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+    } catch {
+      setError('복사하지 못했습니다. 주소를 직접 선택해 복사해 주세요.');
+    }
+  }
+  return (
+    <ModalShell
+      title="구글 캘린더 구독"
+      description="아래 주소를 구글 캘린더에 추가하면 업무캘린더 일정이 자동으로 표시됩니다."
+      close={close}
+    >
+      <div className="space-y-4">
+        {error && (
+          <p role="alert" className="rounded-xl bg-[#fdecea] p-3 text-sm text-[#a83f36]">
+            {error}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <input
+            aria-label="구독 주소"
+            readOnly
+            value={url || '주소를 만드는 중입니다.'}
+            onFocus={(event) => event.currentTarget.select()}
+            className={`${inputClass} font-mono text-xs`}
+          />
+          <Button type="button" disabled={!url} onClick={() => void copy()}>
+            {copied ? <Check /> : <Link2 />}
+            {copied ? '복사됨' : '복사'}
+          </Button>
+        </div>
+        <ol className="list-decimal space-y-1 pl-5 text-sm leading-6 text-[#4b5a51]">
+          <li>컴퓨터에서 구글 캘린더(calendar.google.com)를 엽니다.</li>
+          <li>왼쪽 &quot;다른 캘린더&quot; 옆 + → &quot;URL로 추가&quot;를 누릅니다.</li>
+          <li>복사한 주소를 붙여넣고 &quot;캘린더 추가&quot;를 누릅니다.</li>
+        </ol>
+        <p className="rounded-xl bg-[#fff8df] p-3 text-xs leading-5 text-[#6f623d]">
+          구글 캘린더는 구독한 일정을 몇 시간 간격으로 새로 읽어 오므로 변경 사항이
+          바로 보이지 않을 수 있습니다. 이 주소를 아는 사람은 업무 일정을 볼 수
+          있으니 다른 사람과 공유하지 마세요.
+        </p>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -4391,14 +4414,14 @@ function NewsView({
 }) {
   const recent = news.filter((item) => {
     const age = dayDifference(item.collectedAt, isoDate());
-    return age >= 0 && age <= 2;
+    return age >= 0 && age <= NEWS_RECENT_DAYS - 1;
   });
   const groups = groupNewsByCategory(recent);
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-[#748078]">
-          최근 3일 이내 {groups.length}개 카테고리에서 {recent.length}건
+          최근 {NEWS_RECENT_DAYS}일 이내 {groups.length}개 카테고리에서 {recent.length}건
         </p>
         {isAdmin && (
           <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-xl bg-[#2f6b4f] px-4 text-sm font-bold text-white">
@@ -4476,7 +4499,7 @@ function NewsView({
           ))}
         </div>
       ) : (
-        <Empty title="최근 3일 이내 관광뉴스가 없습니다." />
+        <Empty title="최근 10일 이내 관광뉴스가 없습니다." />
       )}
     </div>
   );

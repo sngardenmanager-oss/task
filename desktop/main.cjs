@@ -31,7 +31,7 @@ function getNewsSyncStatePath() {
 }
 
 // 주간 보고에서 지난주 뉴스를 고를 수 있도록 최근 14일치를 서버로 동기화한다.
-// 뉴스 탭과 홈 화면은 화면에서 최근 3일만 걸러 보여준다.
+// 뉴스 탭과 홈 화면은 화면에서 최근 10일만 걸러 보여준다.
 const NEWS_SYNC_DAYS = 14;
 
 function recentKoreaDates(count = NEWS_SYNC_DAYS) {

@@ -70,8 +70,9 @@ export function defaultReportConfig(
     metricNote: '',
   };
 }
-export function scopeKey(config: ReportConfig) {
-  return config.scope === 'mine' ? 'mine' : 'team:' + config.team;
+/** 보고서 저장소는 팀이 함께 쓰므로 "내 업무" 범위는 작성자별로 따로 이어집니다. */
+export function scopeKey(config: ReportConfig, ownerId: string) {
+  return config.scope === 'mine' ? 'mine:' + ownerId : 'team:' + config.team;
 }
 export function inReportScope(
   task: WorkspaceState['tasks'][number],
@@ -138,7 +139,7 @@ export function collectReportRows(
   existing: ReportRow[] = [],
   previous?: ReportDocument,
 ): ReportRow[] {
-  const key = scopeKey(config);
+  const key = scopeKey(config, actor.id);
   const savedTracks = tracks.filter((t) => t.scopeKey === key);
   const result = new Map<string, ReportRow>(
     existing.map((row) => [row.id, structuredClone(row)]),
@@ -233,7 +234,7 @@ export function newReport(
     .filter(
       (r) =>
         r.status === 'final' &&
-        scopeKey(r.config) === scopeKey(config) &&
+        scopeKey(r.config, r.ownerId) === scopeKey(config, actor.id) &&
         r.config.meetingDate < config.meetingDate,
     )
     .sort(
@@ -330,7 +331,7 @@ export function saveReport(
   if (previous?.status === 'final')
     throw new Error('확정본은 수정본을 만들어 변경해 주세요.');
   const now = new Date().toISOString();
-  const key = scopeKey(report.config);
+  const key = scopeKey(report.config, report.ownerId);
   const tracks = [...store.tracks];
   for (const row of report.rows) {
     const index = tracks.findIndex(
