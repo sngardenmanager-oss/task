@@ -5,7 +5,7 @@ import {
   requireWorkspaceMember,
 } from '@/lib/auth-server';
 import { readWorkspaceState, writeWorkspaceState } from '@/lib/workspace-store';
-import type { Member, WorkspaceState } from '@/lib/types';
+import type { Member, Task, TaskLink, WorkspaceState } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,6 +32,23 @@ function mergeById<T extends { id: string }>(
   ];
 }
 
+/** 두 사람이 같은 업무에 동시에 연결을 걸어도 한쪽이 사라지지 않도록 연결은 id 기준 합집합으로 합칩니다.
+ * 해제한 연결은 removedAt이 남아 있으므로 한쪽이라도 해제했으면 해제 상태를 유지합니다. */
+function mergeTaskLinks(before: Task | undefined, incoming: Task): Task {
+  if (!before?.links?.length) return incoming;
+  const merged = new Map<string, TaskLink>(
+    before.links.map((link) => [link.id, link]),
+  );
+  for (const link of incoming.links ?? []) {
+    const previous = merged.get(link.id);
+    merged.set(
+      link.id,
+      previous?.removedAt && !link.removedAt ? previous : link,
+    );
+  }
+  return { ...incoming, links: [...merged.values()] };
+}
+
 function mergeIncomingState(
   before: WorkspaceState,
   incoming: WorkspaceState,
@@ -41,12 +58,20 @@ function mergeIncomingState(
     ...(before.deletedIds ?? []),
     ...requestedDeletedIds,
   ]);
+  const beforeTasks = new Map(before.tasks.map((task) => [task.id, task]));
   return {
     members: mergeById(before.members, incoming.members, deletedIds),
     categories: mergeById(before.categories, incoming.categories, deletedIds),
-    tasks: mergeById(before.tasks, incoming.tasks, deletedIds),
+    tasks: mergeById(before.tasks, incoming.tasks, deletedIds).map((task) =>
+      mergeTaskLinks(beforeTasks.get(task.id), task),
+    ),
     routines: mergeById(before.routines, incoming.routines, deletedIds),
     notes: mergeById(before.notes, incoming.notes, deletedIds),
+    projectTemplates: mergeById(
+      before.projectTemplates ?? [],
+      incoming.projectTemplates ?? [],
+      deletedIds,
+    ),
     deletedIds: [...deletedIds],
   };
 }

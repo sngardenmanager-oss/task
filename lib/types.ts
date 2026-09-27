@@ -44,6 +44,18 @@ export type ReferenceLink = {
   afterChecklistIndex: number;
 };
 
+export type TaskLink = {
+  id: string;
+  /** 연결 대상 업무 id */
+  taskId: string;
+  /** prerequisite: 대상 업무가 먼저 끝나야 이 업무를 할 수 있음, related: 참고할 관련 업무 */
+  kind: 'prerequisite' | 'related';
+  createdBy: string;
+  createdAt: string;
+  /** 연결을 해제한 시각. 서버 병합 때 해제한 연결이 되살아나지 않도록 기록만 남깁니다. */
+  removedAt?: string;
+};
+
 export type Task = {
   id: string;
   title: string;
@@ -66,6 +78,27 @@ export type Task = {
   sourceRoutineId?: string;
   completedAt?: string;
   statusHistory?: { at: string; actorId: string; from: TaskStatus; to: TaskStatus }[];
+  /** 메인 일정 id. 있으면 이 업무는 하위 일정입니다. 하위의 하위는 두지 않습니다. */
+  parentId?: string;
+  /** 메인 일정 시작일(D-day) 기준 일수(-40 = 40일 전). 없으면 날짜를 직접 지정한 것입니다. */
+  offsetDays?: number;
+  /** 이 업무에서 건 연결. 한쪽에만 저장하고 반대쪽은 계산해 보여줍니다. */
+  links?: TaskLink[];
+  createdBy: string;
+  createdAt: string;
+};
+
+export type ProjectTemplateItem = {
+  title: string;
+  offsetDays: number;
+  categoryId: string;
+  checklist: string[];
+};
+
+export type ProjectTemplate = {
+  id: string;
+  name: string;
+  items: ProjectTemplateItem[];
   createdBy: string;
   createdAt: string;
 };
@@ -116,6 +149,7 @@ export type WorkspaceState = {
   tasks: Task[];
   routines: Routine[];
   notes: SpecialNote[];
+  projectTemplates?: ProjectTemplate[];
   deletedIds?: string[];
 };
 

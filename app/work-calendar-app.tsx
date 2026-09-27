@@ -18,6 +18,7 @@ import {
   CircleAlert,
   ClipboardCheck,
   ClipboardList,
+  CornerLeftUp,
   Download,
   FileSpreadsheet,
   FileText,
@@ -26,6 +27,7 @@ import {
   Link2,
   ListFilter,
   LoaderCircle,
+  Lock,
   LogOut,
   Menu,
   MessageCircle,
@@ -52,12 +54,14 @@ import type {
   Comment,
   Member,
   NewsItem,
+  ProjectTemplate,
   ReferenceLink,
   RegistrationRequest,
   Role,
   Routine,
   SpecialNote,
   Task,
+  TaskLink,
   WorkspaceState,
 } from '@/lib/types';
 
@@ -82,6 +86,13 @@ type Modal =
   | 'member'
   | 'detail'
   | null;
+/** 새 업무 입력창을 열 때 미리 채울 메인 일정·연결 대상입니다. */
+type TaskDraft = { parentId?: string; linkTargetId?: string };
+/** before: 새 업무를 대상보다 먼저 함, after: 대상 다음에 함, related: 관련 있음 */
+type NewTaskLink = {
+  targetId: string;
+  direction: 'before' | 'after' | 'related';
+};
 type AppHistoryEntry = {
   kind: 'guard' | 'screen';
   view: View;
@@ -233,6 +244,102 @@ function clamp(value: number, min: number, max: number) {
 
 function isTaskOverdue(task: Task) {
   return task.status !== 'completed' && (task.endDate ?? task.date) < isoDate();
+}
+
+/** 메인 일정 아래 하위 일정을 날짜순으로 반환합니다. */
+function childTasksOf(tasks: Task[], parentId: string) {
+  return tasks
+    .filter((task) => task.parentId === parentId)
+    .sort((a, b) => compareTaskSchedule(a.date, a.time, b.date, b.time));
+}
+
+function isMainTask(tasks: Task[], taskId: string) {
+  return tasks.some((task) => task.parentId === taskId);
+}
+
+function projectProgress(children: Task[]) {
+  const done = children.filter((task) => task.status === 'completed').length;
+  return {
+    done,
+    total: children.length,
+    percent: children.length ? Math.round((done / children.length) * 100) : 0,
+    delayed: children.filter(isTaskOverdue).length,
+  };
+}
+
+/** 하위 일정이면 메인 일정을, 하위 일정을 가진 메인이면 자기 자신을 프로젝트로 봅니다. */
+function projectOf(tasks: Task[], task: Task) {
+  if (task.parentId) return tasks.find((item) => item.id === task.parentId);
+  return tasks.some((item) => item.parentId === task.id) ? task : undefined;
+}
+
+/** 하위 일정 제목 앞에 붙는 "[메인명] " 태그입니다. */
+function projectTag(tasks: Task[], task: Task) {
+  if (!task.parentId) return '';
+  const parent = tasks.find((item) => item.id === task.parentId);
+  return parent ? `[${parent.title}] ` : '';
+}
+
+function formatOffset(days: number) {
+  if (days === 0) return 'D-day';
+  return days < 0 ? `D-${Math.abs(days)}` : `D+${days}`;
+}
+
+function activeLinks(task: Task) {
+  return (task.links ?? []).filter((link) => !link.removedAt);
+}
+
+/** 업무의 연결을 방향별로 나눕니다. 연결은 한쪽에만 저장되므로 다른 업무의 links도 함께 확인합니다. */
+function linkedTasksOf(tasks: Task[], task: Task) {
+  const byId = new Map(tasks.map((item) => [item.id, item]));
+  const before: { task: Task; owner: Task; linkId: string }[] = [];
+  const after: { task: Task; owner: Task; linkId: string }[] = [];
+  const related: { task: Task; owner: Task; linkId: string }[] = [];
+  for (const link of activeLinks(task)) {
+    const target = byId.get(link.taskId);
+    if (!target) continue;
+    const entry = { task: target, owner: task, linkId: link.id };
+    (link.kind === 'prerequisite' ? before : related).push(entry);
+  }
+  for (const other of tasks) {
+    if (other.id === task.id) continue;
+    for (const link of activeLinks(other)) {
+      if (link.taskId !== task.id) continue;
+      const entry = { task: other, owner: other, linkId: link.id };
+      (link.kind === 'prerequisite' ? after : related).push(entry);
+    }
+  }
+  return { before, after, related };
+}
+
+function pendingPrerequisites(tasks: Task[], task: Task) {
+  return linkedTasksOf(tasks, task).before.filter(
+    ({ task: item }) => item.status !== 'completed',
+  );
+}
+
+/** 이미 같은 연결이 있거나 선행 연결이 서로를 가리키게 되면 이유를, 걸 수 있으면 빈 문자열을 반환합니다. */
+function linkProblem(
+  tasks: Task[],
+  owner: Task,
+  targetId: string,
+  kind: TaskLink['kind'],
+) {
+  if (owner.id === targetId) return '자기 자신과는 연결할 수 없습니다.';
+  const target = tasks.find((item) => item.id === targetId);
+  if (!target) return '연결할 업무를 찾을 수 없습니다.';
+  const existing = [
+    ...activeLinks(owner).filter((link) => link.taskId === targetId),
+    ...activeLinks(target).filter((link) => link.taskId === owner.id),
+  ];
+  if (existing.length) return '이미 연결된 업무입니다.';
+  if (kind === 'prerequisite') {
+    const reversed = activeLinks(target).some(
+      (link) => link.taskId === owner.id && link.kind === 'prerequisite',
+    );
+    if (reversed) return '서로를 먼저 해야 하는 순환 연결은 걸 수 없습니다.';
+  }
+  return '';
 }
 
 /** 캘린더 막대 배경색: 긴급은 파란색, 지연은 빨간색으로 분류(카테고리 색상 무시)를 덮어씁니다. */
@@ -451,6 +558,10 @@ function mergeWorkspaceStates(
     tasks: mergeById(preferred.tasks, fallback.tasks),
     routines: mergeById(preferred.routines, fallback.routines),
     notes: mergeById(preferred.notes, fallback.notes),
+    projectTemplates: mergeById(
+      preferred.projectTemplates ?? [],
+      fallback.projectTemplates ?? [],
+    ),
     deletedIds: [...deletedIds],
   };
 }
@@ -500,7 +611,7 @@ function exportCalendarIcal(data: WorkspaceState) {
       `DTSTAMP:${stamp}`,
       `DTSTART;VALUE=DATE:${icalDate(task.date)}`,
       `DTEND;VALUE=DATE:${icalDate(shiftIsoDate(task.endDate ?? task.date, 1))}`,
-      `SUMMARY:${icalEscape(task.title)}`,
+      `SUMMARY:${icalEscape(`${projectTag(data.tasks, task)}${task.title}`)}`,
       `DESCRIPTION:${icalEscape(description)}`,
       category ? `CATEGORIES:${icalEscape(category)}` : '',
       `STATUS:${task.status === 'completed' ? 'COMPLETED' : 'CONFIRMED'}`,
@@ -580,6 +691,7 @@ export default function WorkCalendarApp({
   );
   const [selectedDate, setSelectedDate] = useState(isoDate());
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
+  const [taskDraft, setTaskDraft] = useState<TaskDraft>({});
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [memberFilter, setMemberFilter] = useState('all');
@@ -1013,7 +1125,25 @@ export default function WorkCalendarApp({
 
   function openCreateTask(date = today, time: string | null = null) {
     if (!canEdit) return setToast('댓글 사용자는 업무를 등록할 수 없습니다.');
+    setTaskDraft({});
     openModal('task', { selectedDate: date, selectedTime: time });
+  }
+
+  function openCreateSubtask(parentId: string) {
+    if (!canEdit) return setToast('댓글 사용자는 업무를 등록할 수 없습니다.');
+    const parent = data.tasks.find((task) => task.id === parentId);
+    setTaskDraft({ parentId });
+    openModal('task', { selectedDate: parent?.date ?? today, selectedTime: null });
+  }
+
+  function openCreateLinkedTask(targetId: string) {
+    if (!canEdit) return setToast('댓글 사용자는 업무를 등록할 수 없습니다.');
+    const target = data.tasks.find((task) => task.id === targetId);
+    setTaskDraft({ linkTargetId: targetId });
+    openModal('task', {
+      selectedDate: target && target.date > today ? target.date : today,
+      selectedTime: null,
+    });
   }
 
   function openRoutine(routineId: string) {
@@ -1033,6 +1163,33 @@ export default function WorkCalendarApp({
   function setTaskStatus(taskId: string, status: Task['status']) {
     if (status === 'completed' && !isAdmin)
       return setToast('최종 완료는 관리자만 처리할 수 있습니다.');
+    const tasks = dataRef.current.tasks;
+    const target = tasks.find((task) => task.id === taskId);
+    if (target && target.status !== status) {
+      // 결정 사항: 하위 미완료·선행 미완료는 막지 않고 경고만 한다.
+      if (status === 'completed' || status === 'completion_requested') {
+        const openChildren = childTasksOf(tasks, taskId).filter(
+          (task) => task.status !== 'completed',
+        );
+        if (
+          openChildren.length &&
+          !window.confirm(
+            `미완료 하위 일정이 ${openChildren.length}건 있습니다. 그래도 ${status === 'completed' ? '최종 완료' : '완료 요청'}할까요?`,
+          )
+        )
+          return;
+      }
+      if (status === 'in_progress' && target.status === 'scheduled') {
+        const waiting = pendingPrerequisites(tasks, target);
+        if (
+          waiting.length &&
+          !window.confirm(
+            `먼저 끝나야 할 업무가 아직 완료되지 않았습니다.\n${waiting.map(({ task }) => `· ${task.title}`).join('\n')}\n그래도 진행을 시작할까요?`,
+          )
+        )
+          return;
+      }
+    }
     updateData(
       (current) => ({
         ...current,
@@ -1098,18 +1255,265 @@ export default function WorkCalendarApp({
     );
   }
 
-  function deleteTask(taskId: string) {
+  /** childMode: 메인 일정을 지울 때 하위 일정을 함께 지울지(delete), 남기고 연결만 풀지(detach) 정합니다. */
+  function deleteTask(taskId: string, childMode?: 'delete' | 'detach') {
     if (!isAdmin) return setToast('업무 삭제는 관리자만 할 수 있습니다.');
-    if (!window.confirm('이 업무를 삭제할까요?')) return;
-    deletedIdsRef.current.add(taskId);
+    const children = childTasksOf(dataRef.current.tasks, taskId);
+    if (!childMode && !window.confirm('이 업무를 삭제할까요?')) return;
+    const removedIds = new Set([
+      taskId,
+      ...(childMode === 'delete' ? children.map((task) => task.id) : []),
+    ]);
+    removedIds.forEach((id) => deletedIdsRef.current.add(id));
+    const removedAt = new Date().toISOString();
     updateData(
       (current) => ({
         ...current,
-        tasks: current.tasks.filter((task) => task.id !== taskId),
+        tasks: current.tasks
+          .filter((task) => !removedIds.has(task.id))
+          .map((task) => {
+            let next = task;
+            if (task.parentId && removedIds.has(task.parentId)) {
+              next = { ...next, parentId: undefined, offsetDays: undefined };
+            }
+            if (activeLinks(task).some((link) => removedIds.has(link.taskId))) {
+              next = {
+                ...next,
+                links: (next.links ?? []).map((link) =>
+                  removedIds.has(link.taskId) && !link.removedAt
+                    ? { ...link, removedAt }
+                    : link,
+                ),
+              };
+            }
+            return next;
+          }),
       }),
-      '업무를 삭제했습니다.',
+      childMode === 'delete'
+        ? `업무와 하위 일정 ${children.length}건을 삭제했습니다.`
+        : '업무를 삭제했습니다.',
     );
     closeModal();
+  }
+
+  function addTaskLink(ownerId: string, targetId: string, kind: TaskLink['kind']) {
+    if (!canEdit) return setToast('댓글 사용자는 연결을 추가할 수 없습니다.');
+    const owner = dataRef.current.tasks.find((task) => task.id === ownerId);
+    if (!owner) return;
+    const problem = linkProblem(dataRef.current.tasks, owner, targetId, kind);
+    if (problem) return setToast(problem);
+    const link: TaskLink = {
+      id: uid('link'),
+      taskId: targetId,
+      kind,
+      createdBy: actor.id,
+      createdAt: new Date().toISOString(),
+    };
+    updateData(
+      (current) => ({
+        ...current,
+        tasks: current.tasks.map((task) =>
+          task.id === ownerId
+            ? { ...task, links: [...(task.links ?? []), link] }
+            : task,
+        ),
+      }),
+      '업무를 연결했습니다.',
+    );
+  }
+
+  function removeTaskLink(ownerId: string, linkId: string) {
+    if (!canEdit) return setToast('댓글 사용자는 연결을 해제할 수 없습니다.');
+    const removedAt = new Date().toISOString();
+    updateData(
+      (current) => ({
+        ...current,
+        tasks: current.tasks.map((task) =>
+          task.id === ownerId
+            ? {
+                ...task,
+                links: (task.links ?? []).map((link) =>
+                  link.id === linkId ? { ...link, removedAt } : link,
+                ),
+              }
+            : task,
+        ),
+      }),
+      '연결을 해제했습니다.',
+    );
+  }
+
+  /** 새 업무 저장. 연결 업무 만들기에서 왔다면 고른 방향대로 연결도 함께 겁니다. */
+  function saveNewTask(task: Task, link?: NewTaskLink) {
+    const createdAt = new Date().toISOString();
+    const makeLink = (taskId: string, kind: TaskLink['kind']): TaskLink => ({
+      id: uid('link'),
+      taskId,
+      kind,
+      createdBy: actor.id,
+      createdAt,
+    });
+    const nextTask =
+      link && link.direction !== 'before'
+        ? {
+            ...task,
+            links: [
+              makeLink(
+                link.targetId,
+                link.direction === 'after' ? 'prerequisite' : 'related',
+              ),
+            ],
+          }
+        : task;
+    updateData(
+      (current) => ({
+        ...current,
+        tasks: [
+          ...current.tasks.map((item) =>
+            link?.direction === 'before' && item.id === link.targetId
+              ? {
+                  ...item,
+                  links: [
+                    ...(item.links ?? []),
+                    makeLink(task.id, 'prerequisite'),
+                  ],
+                }
+              : item,
+          ),
+          nextTask,
+        ],
+      }),
+      task.parentId
+        ? '하위 일정을 등록했습니다.'
+        : link
+          ? '연결 업무를 등록했습니다.'
+          : '새 업무를 등록했습니다.',
+    );
+  }
+
+  /** 업무 수정 저장. 메인 일정의 D-day가 바뀌면 D-day 기준 하위 일정을 같이 옮길지 묻습니다. */
+  function saveEditedTask(updatedTask: Task) {
+    const previous = dataRef.current.tasks.find(
+      (task) => task.id === updatedTask.id,
+    );
+    const delta = previous ? dayDifference(previous.date, updatedTask.date) : 0;
+    const movable =
+      previous && delta !== 0
+        ? childTasksOf(dataRef.current.tasks, updatedTask.id).filter(
+            (task) =>
+              task.offsetDays !== undefined && task.status !== 'completed',
+          )
+        : [];
+    const moveChildren =
+      movable.length > 0 &&
+      window.confirm(
+        `메인 일정 날짜가 바뀌었습니다. D-day 기준 하위 일정 ${movable.length}건도 같이 옮길까요?\n(완료된 일정과 날짜를 직접 지정한 일정은 옮기지 않습니다.)`,
+      );
+    const movableIds = new Set(movable.map((task) => task.id));
+    updateData(
+      (current) => ({
+        ...current,
+        tasks: current.tasks.map((task) => {
+          if (task.id === updatedTask.id) return updatedTask;
+          if (task.parentId !== updatedTask.id || delta === 0) return task;
+          if (moveChildren && movableIds.has(task.id)) {
+            return {
+              ...task,
+              date: shiftIsoDate(task.date, delta),
+              endDate: task.endDate ? shiftIsoDate(task.endDate, delta) : undefined,
+            };
+          }
+          // 옮기지 않은 하위 일정은 날짜가 그대로이므로 D-day 기준 일수를 새 D-day에 맞춰 다시 계산한다.
+          return task.offsetDays === undefined
+            ? task
+            : { ...task, offsetDays: dayDifference(updatedTask.date, task.date) };
+        }),
+      }),
+      moveChildren
+        ? `업무와 하위 일정 ${movable.length}건의 날짜를 옮겼습니다.`
+        : '업무 내용을 수정했습니다.',
+    );
+  }
+
+  function applyProjectTemplate(mainId: string, templateId: string) {
+    if (!canEdit) return;
+    const main = dataRef.current.tasks.find((task) => task.id === mainId);
+    const template = (dataRef.current.projectTemplates ?? []).find(
+      (item) => item.id === templateId,
+    );
+    if (!main || !template) return;
+    const createdAt = new Date().toISOString();
+    const children: Task[] = template.items.map((item) => ({
+      id: uid('task'),
+      title: item.title,
+      description: '',
+      date: shiftIsoDate(main.date, item.offsetDays),
+      categoryId: item.categoryId,
+      assigneeId: main.assigneeId,
+      collaborators: [],
+      priority: 'normal',
+      status: 'scheduled',
+      type: 'task',
+      checklist: item.checklist.map((text) => ({
+        id: uid('check'),
+        text,
+        done: false,
+      })),
+      comments: [],
+      parentId: main.id,
+      offsetDays: item.offsetDays,
+      createdBy: actor.id,
+      createdAt,
+    }));
+    updateData(
+      (current) => ({ ...current, tasks: [...current.tasks, ...children] }),
+      `'${template.name}' 템플릿으로 하위 일정 ${children.length}건을 만들었습니다.`,
+    );
+  }
+
+  function saveProjectTemplate(mainId: string) {
+    if (!canEdit) return;
+    const main = dataRef.current.tasks.find((task) => task.id === mainId);
+    if (!main) return;
+    const children = childTasksOf(dataRef.current.tasks, mainId);
+    if (!children.length) return setToast('저장할 하위 일정이 없습니다.');
+    const name = window.prompt('템플릿 이름', main.title)?.trim();
+    if (!name) return;
+    const template: ProjectTemplate = {
+      id: uid('template'),
+      name,
+      items: children.map((task) => ({
+        title: task.title,
+        offsetDays: task.offsetDays ?? dayDifference(main.date, task.date),
+        categoryId: task.categoryId,
+        checklist: task.checklist.map((item) => item.text),
+      })),
+      createdBy: actor.id,
+      createdAt: new Date().toISOString(),
+    };
+    updateData(
+      (current) => ({
+        ...current,
+        projectTemplates: [...(current.projectTemplates ?? []), template],
+      }),
+      `'${name}' 템플릿을 저장했습니다.`,
+    );
+  }
+
+  function deleteProjectTemplate(templateId: string) {
+    if (!isAdmin) return setToast('템플릿 삭제는 관리자만 할 수 있습니다.');
+    if (!window.confirm('이 템플릿을 삭제할까요? 이미 만든 하위 일정은 유지됩니다.'))
+      return;
+    deletedIdsRef.current.add(templateId);
+    updateData(
+      (current) => ({
+        ...current,
+        projectTemplates: (current.projectTemplates ?? []).filter(
+          (item) => item.id !== templateId,
+        ),
+      }),
+      '템플릿을 삭제했습니다.',
+    );
   }
 
   function deleteRoutine(routineId: string) {
@@ -1748,6 +2152,7 @@ export default function WorkCalendarApp({
               refreshPendingRegistrations={refreshPendingRegistrations}
               approveRegistration={approveRegistration}
               updateData={updateData}
+              deleteTemplate={deleteProjectTemplate}
             />
           )}
           {view === 'notifications' && (
@@ -1791,13 +2196,9 @@ export default function WorkCalendarApp({
           actor={actor}
           defaultDate={selectedDate}
           defaultTime={selectedTime ?? undefined}
+          draft={taskDraft}
           close={closeModal}
-          save={(task) =>
-            updateData(
-              (current) => ({ ...current, tasks: [...current.tasks, task] }),
-              '새 업무를 등록했습니다.',
-            )
-          }
+          save={saveNewTask}
         />
       )}
       {modal === 'editTask' && selectedTask && (
@@ -1805,17 +2206,7 @@ export default function WorkCalendarApp({
           data={data}
           task={selectedTask}
           close={closeModal}
-          save={(updatedTask) =>
-            updateData(
-              (current) => ({
-                ...current,
-                tasks: current.tasks.map((task) =>
-                  task.id === updatedTask.id ? updatedTask : task,
-                ),
-              }),
-              '업무 내용을 수정했습니다.',
-            )
-          }
+          save={saveEditedTask}
         />
       )}
       {modal === 'note' && (
@@ -1880,6 +2271,7 @@ export default function WorkCalendarApp({
       )}
       {modal === 'detail' && selectedTask && (
         <TaskDetail
+          key={selectedTask.id}
           task={selectedTask}
           data={data}
           canEdit={canEdit}
@@ -1889,6 +2281,15 @@ export default function WorkCalendarApp({
           toggleChecklist={toggleChecklist}
           setTaskStatus={setTaskStatus}
           deleteTask={deleteTask}
+          openTask={openTask}
+          addSubtask={() => openCreateSubtask(selectedTask.id)}
+          createLinkedTask={() => openCreateLinkedTask(selectedTask.id)}
+          addLink={addTaskLink}
+          removeLink={removeTaskLink}
+          applyTemplate={(templateId) =>
+            applyProjectTemplate(selectedTask.id, templateId)
+          }
+          saveTemplate={() => saveProjectTemplate(selectedTask.id)}
           deleteComment={deleteTaskComment}
           addComment={(body) =>
             updateData(
@@ -2046,7 +2447,7 @@ function LinkifiedText({ text }: { text: string }) {
 }
 
 /** 긴급 업무는 "‼ [긴급]" 파란 표시를, 지연 업무(완료 제외)는 빨간 글씨를 덧붙입니다. */
-function TaskTitleText({ task }: { task: Task }) {
+function TaskTitleText({ task, tasks }: { task: Task; tasks?: Task[] }) {
   const isUrgent = task.status !== 'completed' && task.priority === 'urgent';
   const overdueFlag = isTaskOverdue(task);
   const colorClass = isUrgent
@@ -2054,10 +2455,23 @@ function TaskTitleText({ task }: { task: Task }) {
     : overdueFlag
       ? 'text-[#c0392b]'
       : '';
+  const tag = tasks ? projectTag(tasks, task) : '';
   return (
     <span className={colorClass}>
       {isUrgent && <span className="font-black">‼ [긴급] </span>}
+      {tag && <span className="font-black text-[#7a5b1f]">{tag}</span>}
       {task.title}
+    </span>
+  );
+}
+
+function ProgressBar({ percent }: { percent: number }) {
+  return (
+    <span className="block h-1.5 w-full overflow-hidden rounded-full bg-[#e3e7e1]">
+      <span
+        className="block h-full rounded-full bg-[#2f6b4f] transition-[width]"
+        style={{ width: `${percent}%` }}
+      />
     </span>
   );
 }
@@ -2073,6 +2487,11 @@ function TaskCard({
 }) {
   const category = data.categories.find((item) => item.id === task.categoryId);
   const names = assigneeNames(task, data);
+  const children = childTasksOf(data.tasks, task.id);
+  const progress = projectProgress(children);
+  const locked =
+    task.status !== 'completed' &&
+    pendingPrerequisites(data.tasks, task).length > 0;
   return (
     <button
       onClick={() => openTask(task.id)}
@@ -2093,14 +2512,33 @@ function TaskCard({
           <strong
             className={`truncate text-sm ${task.status === 'completed' ? 'text-[#879089] line-through' : ''}`}
           >
-            <TaskTitleText task={task} />
+            <TaskTitleText task={task} tasks={data.tasks} />
           </strong>
+          {locked && (
+            <Lock
+              aria-label="먼저 끝나야 할 업무가 남아 있음"
+              className="size-3.5 shrink-0 text-[#a0762c]"
+            />
+          )}
         </span>
         <span className="mt-1 block truncate text-xs text-[#5f6d64]">
           {formatDate(task.date)} · {formatTaskTime(task.time, task.endTime)} ·{' '}
           {names.length ? names.join(', ') : '미배정'} ·{' '}
           {statusLabel[task.status]}
         </span>
+        {progress.total > 0 && (
+          <span className="mt-2 flex items-center gap-2 text-[11px] font-bold text-[#4b5a51]">
+            <span className="w-24 shrink-0 sm:w-32">
+              <ProgressBar percent={progress.percent} />
+            </span>
+            하위 {progress.done}/{progress.total} · {progress.percent}%
+            {progress.delayed > 0 && (
+              <span className="rounded-full bg-[#fde2e1] px-1.5 py-0.5 text-[10px] text-[#c0392b]">
+                지연 {progress.delayed}건
+              </span>
+            )}
+          </span>
+        )}
       </span>
       <ChevronRight className="size-4 text-[#9aa49d] transition group-hover:translate-x-0.5" />
     </button>
@@ -2284,7 +2722,7 @@ function TodayView({
                       <strong
                         className={`block truncate text-sm ${task.status === 'completed' ? 'line-through' : ''}`}
                       >
-                        <TaskTitleText task={task} />
+                        <TaskTitleText task={task} tasks={data.tasks} />
                       </strong>
                       <span className="mt-1 block text-xs text-[#748078]">
                         {priorityLabel[task.priority]} ·{' '}
@@ -2792,10 +3230,14 @@ function CalendarView({
                           marginLeft: start === 0 ? 0 : 2,
                           marginRight: end === 6 ? 0 : 2,
                           background: taskBarBackground(task, category?.color),
+                          boxShadow: isMainTask(data.tasks, task.id)
+                            ? 'inset 0 0 0 2px #f2cf6b'
+                            : undefined,
                           textShadow: '0 1px 2px rgba(0, 0, 0, 0.35)',
                         }}
                       >
                         {task.priority === 'urgent' ? '‼[긴급] ' : ''}
+                        {projectTag(data.tasks, task)}
                         {task.title}
                       </button>
                     );
@@ -2926,10 +3368,14 @@ function WeekCalendarGrid({
                     marginLeft: start === 0 ? 0 : 2,
                     marginRight: end === 6 ? 0 : 2,
                     background: taskBarBackground(task, category?.color),
+                    boxShadow: isMainTask(data.tasks, task.id)
+                      ? 'inset 0 0 0 2px #f2cf6b'
+                      : undefined,
                     textShadow: '0 1px 2px rgba(0, 0, 0, 0.35)',
                   }}
                 >
                   {task.priority === 'urgent' ? '‼[긴급] ' : ''}
+                  {projectTag(data.tasks, task)}
                   {task.title}
                 </button>
               );
@@ -3084,11 +3530,15 @@ function WeekCalendarGrid({
                         left: `${(lane / laneCount) * 100}%`,
                         width: `calc(${100 / laneCount}% - 2px)`,
                         background: taskBarBackground(task, category?.color),
+                        boxShadow: isMainTask(data.tasks, task.id)
+                          ? 'inset 0 0 0 2px #f2cf6b'
+                          : undefined,
                         textShadow: '0 1px 2px rgba(0, 0, 0, 0.35)',
                       }}
                     >
                       <span className="block truncate">
                         {task.priority === 'urgent' ? '‼[긴급] ' : ''}
+                        {projectTag(data.tasks, task)}
                         {task.title}
                       </span>
                       <span className="block truncate text-[9px] font-normal opacity-90">
@@ -3159,7 +3609,7 @@ function DayItemsModal({
               />
               <span className="min-w-0">
                 <span className="block font-black text-[#263b2e]">
-                  <TaskTitleText task={task} />
+                  <TaskTitleText task={task} tasks={data.tasks} />
                 </span>
                 <span className="block text-xs text-[#718078]">
                   {formatTaskTime(task.time, task.endTime)} ·{' '}
@@ -3214,6 +3664,19 @@ function TasksView({
   focusLabel: string | null;
   clearFocus: () => void;
 }) {
+  const [projectFilter, setProjectFilter] = useState('all');
+  const projects = data.tasks
+    .filter((task) => isMainTask(data.tasks, task.id))
+    .sort((a, b) => b.date.localeCompare(a.date));
+  const shownTasks =
+    projectFilter === 'all'
+      ? tasks
+      : projectFilter === 'projects'
+        ? tasks.filter((task) => projects.some((item) => item.id === task.id))
+        : tasks.filter(
+            (task) =>
+              task.id === projectFilter || task.parentId === projectFilter,
+          );
   return (
     <section className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-4 sm:p-5">
       {focusLabel ? (
@@ -3262,16 +3725,33 @@ function TasksView({
                 </option>
               ))}
           </select>
+          <select
+            aria-label="프로젝트 필터"
+            value={projectFilter}
+            onChange={(event) => setProjectFilter(event.target.value)}
+            className={inputClass}
+          >
+            <option value="all">모든 업무</option>
+            <option value="projects">메인 일정만</option>
+            {projects.map((task) => (
+              <option key={task.id} value={task.id}>
+                {task.title} ({formatDate(task.date)})
+              </option>
+            ))}
+          </select>
         </div>
       )}
       <div className="space-y-2">
-        {tasks.length ? (
-          [...tasks]
-            .sort(
-              (a, b) =>
-                Number(b.priority === 'urgent') -
-                  Number(a.priority === 'urgent') ||
-                compareTaskSchedule(a.date, a.time, b.date, b.time),
+        {shownTasks.length ? (
+          [...shownTasks]
+            .sort((a, b) =>
+              projectFilter !== 'all' && projectFilter !== 'projects'
+                ? Number(b.id === projectFilter) -
+                    Number(a.id === projectFilter) ||
+                  compareTaskSchedule(a.date, a.time, b.date, b.time)
+                : Number(b.priority === 'urgent') -
+                    Number(a.priority === 'urgent') ||
+                  compareTaskSchedule(a.date, a.time, b.date, b.time),
             )
             .map((task) => (
               <TaskCard
@@ -4273,6 +4753,7 @@ function SettingsView({
   refreshPendingRegistrations,
   approveRegistration,
   updateData,
+  deleteTemplate,
 }: {
   data: WorkspaceState;
   actor: Member;
@@ -4289,6 +4770,7 @@ function SettingsView({
     fn: (data: WorkspaceState) => WorkspaceState,
     message?: string,
   ) => void;
+  deleteTemplate: (templateId: string) => void;
 }) {
   return (
     <div className="space-y-5">
@@ -4297,6 +4779,11 @@ function SettingsView({
         actor={actor}
         isAdmin={isAdmin}
         updateData={updateData}
+      />
+      <ProjectTemplatesPanel
+        data={data}
+        isAdmin={isAdmin}
+        deleteTemplate={deleteTemplate}
       />
       {isAdmin && <AdminMasterEditPanel data={data} updateData={updateData} />}
       <LegacySettingsView
@@ -4309,6 +4796,71 @@ function SettingsView({
         updateData={updateData}
       />
     </div>
+  );
+}
+
+/** 메인 일정 상세의 "템플릿으로 저장"에서 만든 템플릿 목록입니다. 기본 템플릿은 두지 않습니다. */
+function ProjectTemplatesPanel({
+  data,
+  isAdmin,
+  deleteTemplate,
+}: {
+  data: WorkspaceState;
+  isAdmin: boolean;
+  deleteTemplate: (templateId: string) => void;
+}) {
+  const templates = data.projectTemplates ?? [];
+  return (
+    <section className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-4 sm:p-5">
+      <h3 className="font-black">하위 일정 템플릿</h3>
+      <p className="mt-1 text-xs text-[#748078]">
+        메인 일정 상세에서 &quot;템플릿으로 저장&quot;을 누르면 하위 일정 구성이
+        D-day 기준으로 저장되고, 다음 행사에서 &quot;템플릿 불러오기&quot;로 한 번에
+        만들 수 있습니다.
+      </p>
+      <div className="mt-4 space-y-2">
+        {templates.length ? (
+          templates.map((template) => (
+            <details
+              key={template.id}
+              className="rounded-2xl border border-[#dbe0d9] bg-white p-3"
+            >
+              <summary className="flex cursor-pointer items-center justify-between gap-3 text-sm font-bold">
+                <span className="min-w-0 truncate">
+                  {template.name} · 하위 일정 {template.items.length}개
+                </span>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      deleteTemplate(template.id);
+                    }}
+                    className="shrink-0 text-xs font-bold text-[#a83f36]"
+                  >
+                    삭제
+                  </button>
+                )}
+              </summary>
+              <ul className="mt-2 space-y-1 text-xs text-[#5f6d64]">
+                {[...template.items]
+                  .sort((a, b) => a.offsetDays - b.offsetDays)
+                  .map((item, index) => (
+                    <li key={index}>
+                      <span className="inline-block w-14 font-black text-[#2f6b4f]">
+                        {formatOffset(item.offsetDays)}
+                      </span>
+                      {item.title}
+                    </li>
+                  ))}
+              </ul>
+            </details>
+          ))
+        ) : (
+          <Empty title="저장된 템플릿이 없습니다." />
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -5224,11 +5776,169 @@ function TimePicker({
   );
 }
 
+/** 업무 입력창의 "메인 일정" 선택과 D-day 기준 날짜 입력 상태입니다. D-day 기준이면 시작일은
+ * 메인 일정 시작일 + offsetDays로 자동 계산되어 onDate로 전달됩니다. */
+function useProjectSchedule({
+  data,
+  taskId,
+  initialParentId,
+  initialOffsetDays,
+  onDate,
+}: {
+  data: WorkspaceState;
+  taskId?: string;
+  initialParentId?: string;
+  initialOffsetDays?: number;
+  onDate: (date: string) => void;
+}) {
+  const [parentId, setParentIdState] = useState(initialParentId ?? '');
+  const [useOffset, setUseOffsetState] = useState(
+    Boolean(initialParentId) && (taskId ? initialOffsetDays !== undefined : true),
+  );
+  const [offsetAbs, setOffsetAbsState] = useState(
+    String(Math.abs(initialOffsetDays ?? 0)),
+  );
+  const [offsetAfter, setOffsetAfterState] = useState(
+    (initialOffsetDays ?? 0) > 0,
+  );
+  const hasChildren = taskId ? isMainTask(data.tasks, taskId) : false;
+  const candidates = data.tasks
+    .filter(
+      (task) =>
+        !task.parentId &&
+        task.id !== taskId &&
+        (task.status !== 'completed' || task.id === parentId),
+    )
+    .sort((a, b) => b.date.localeCompare(a.date));
+  const parent = data.tasks.find((task) => task.id === parentId);
+  const offsetDays = (offsetAfter ? 1 : -1) * (Number(offsetAbs) || 0);
+  const computedDate =
+    parent && useOffset ? shiftIsoDate(parent.date, offsetDays) : null;
+
+  function sync(next: {
+    parentId?: string;
+    useOffset?: boolean;
+    offsetAbs?: string;
+    offsetAfter?: boolean;
+  }) {
+    const nextParent = data.tasks.find(
+      (task) => task.id === (next.parentId ?? parentId),
+    );
+    const nextUseOffset = next.useOffset ?? useOffset;
+    const nextOffset =
+      ((next.offsetAfter ?? offsetAfter) ? 1 : -1) *
+      (Number(next.offsetAbs ?? offsetAbs) || 0);
+    if (nextParent && nextUseOffset)
+      onDate(shiftIsoDate(nextParent.date, nextOffset));
+  }
+
+  return {
+    parentId,
+    offsetDays: parent && useOffset ? offsetDays : undefined,
+    computedDate,
+    fields: (
+      <div className="space-y-2 rounded-2xl border border-[#e3d5ad] bg-[#fffbeb] p-3">
+        <Field label="메인 일정 (선택 · 고르면 이 업무는 하위 일정이 됩니다)">
+          <select
+            name="parentId"
+            value={parentId}
+            disabled={hasChildren}
+            onChange={(event) => {
+              const nextParentId = event.target.value;
+              setParentIdState(nextParentId);
+              const nextUseOffset = nextParentId ? true : false;
+              setUseOffsetState(nextUseOffset);
+              sync({ parentId: nextParentId, useOffset: nextUseOffset });
+            }}
+            className={inputClass}
+          >
+            <option value="">없음</option>
+            {candidates.map((task) => (
+              <option key={task.id} value={task.id}>
+                {task.title} ({formatDate(task.date)})
+              </option>
+            ))}
+          </select>
+        </Field>
+        {hasChildren && (
+          <p className="text-xs text-[#7b6d43]">
+            이 업무는 하위 일정을 가진 메인 일정이라 다른 일정 아래로 넣을 수
+            없습니다.
+          </p>
+        )}
+        {parent && (
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-3 text-xs font-bold">
+              <label className="inline-flex items-center gap-1.5">
+                <input
+                  type="radio"
+                  checked={useOffset}
+                  onChange={() => {
+                    setUseOffsetState(true);
+                    sync({ useOffset: true });
+                  }}
+                  className="accent-[#2f6b4f]"
+                />
+                D-day 기준 ({formatDate(parent.date)})
+              </label>
+              <label className="inline-flex items-center gap-1.5">
+                <input
+                  type="radio"
+                  checked={!useOffset}
+                  onChange={() => setUseOffsetState(false)}
+                  className="accent-[#2f6b4f]"
+                />
+                날짜 직접 지정
+              </label>
+            </div>
+            {useOffset && (
+              <div className="flex items-center gap-2 text-sm font-bold">
+                <span>D-day</span>
+                <input
+                  aria-label="D-day 기준 일수"
+                  type="number"
+                  min={0}
+                  value={offsetAbs}
+                  onChange={(event) => {
+                    setOffsetAbsState(event.target.value);
+                    sync({ offsetAbs: event.target.value });
+                  }}
+                  className="h-9 w-20 rounded-lg border border-[#d8ded4] bg-white px-2 text-sm outline-none focus:border-[#2f6b4f]"
+                />
+                <span>일</span>
+                <select
+                  aria-label="D-day 전 또는 후"
+                  value={offsetAfter ? 'after' : 'before'}
+                  onChange={(event) => {
+                    const after = event.target.value === 'after';
+                    setOffsetAfterState(after);
+                    sync({ offsetAfter: after });
+                  }}
+                  className="h-9 rounded-lg border border-[#d8ded4] bg-white px-2 text-sm outline-none focus:border-[#2f6b4f]"
+                >
+                  <option value="before">전</option>
+                  <option value="after">후</option>
+                </select>
+                {computedDate && (
+                  <span className="text-xs text-[#5f6d64]">
+                    → {formatDate(computedDate)} ({formatOffset(offsetDays)})
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    ),
+  };
+}
+
 function TaskForm({
   data,
   actor,
   defaultDate,
   defaultTime,
+  draft,
   close,
   save,
 }: {
@@ -5236,10 +5946,17 @@ function TaskForm({
   actor: Member;
   defaultDate: string;
   defaultTime?: string;
+  draft: TaskDraft;
   close: () => void;
-  save: (task: Task) => void;
+  save: (task: Task, link?: NewTaskLink) => void;
 }) {
   const assigneeId = defaultAssigneeId(data, actor);
+  const linkTarget = draft.linkTargetId
+    ? data.tasks.find((task) => task.id === draft.linkTargetId)
+    : undefined;
+  const linkProject = linkTarget ? projectOf(data.tasks, linkTarget) : undefined;
+  const [linkDirection, setLinkDirection] =
+    useState<NewTaskLink['direction']>('after');
   const startsOvernight = Boolean(
     defaultTime && timeToMinutes(defaultTime) + 60 >= 1440,
   );
@@ -5252,6 +5969,16 @@ function TaskForm({
     defaultTime ? addMinutesToTime(defaultTime, 60) : '',
   );
   const [autoEndDate, setAutoEndDate] = useState(startsOvernight);
+  const initialParentId = draft.parentId ?? linkProject?.id;
+  const initialParent = data.tasks.find((task) => task.id === initialParentId);
+  const schedule = useProjectSchedule({
+    data,
+    initialParentId,
+    initialOffsetDays: initialParent
+      ? dayDifference(initialParent.date, defaultDate)
+      : undefined,
+    onDate: updateStartDate,
+  });
 
   function updateStartDate(nextDate: string) {
     setStartDate(nextDate);
@@ -5306,8 +6033,13 @@ function TaskForm({
     const collaborators = [
       ...new Set(form.getAll('collaborators').map(String)),
     ].filter((id) => id !== primaryAssignee);
+    const link = linkTarget
+      ? { targetId: linkTarget.id, direction: linkDirection }
+      : undefined;
     save({
       id: uid('task'),
+      parentId: schedule.parentId || undefined,
+      offsetDays: schedule.offsetDays,
       title: formText(form, 'title'),
       description: formText(form, 'description'),
       date: startDate,
@@ -5324,16 +6056,50 @@ function TaskForm({
       comments: [],
       createdBy: actor.id,
       createdAt: new Date().toISOString(),
-    });
+    }, link);
     close();
   }
   return (
     <ModalShell
-      title="새 업무"
+      title={draft.parentId ? '새 하위 일정' : linkTarget ? '연결 업무 만들기' : '새 업무'}
       description="업무명·날짜·담당자만 입력해도 바로 등록됩니다."
       close={close}
     >
       <form onSubmit={submit} className="space-y-4">
+        {linkTarget && (
+          <div className="space-y-2 rounded-2xl border border-[#cfe0d5] bg-[#eef5f0] p-3">
+            <p className="text-xs font-black text-[#2f6b4f]">
+              연결 대상: {linkTarget.title}
+            </p>
+            <div className="flex flex-wrap gap-3 text-xs font-bold">
+              {(
+                [
+                  ['before', '이 업무보다 먼저 해야 함'],
+                  ['after', '이 업무 다음에 함'],
+                  ['related', '관련 있음'],
+                ] as const
+              ).map(([value, label]) => (
+                <label key={value} className="inline-flex items-center gap-1.5">
+                  <input
+                    type="radio"
+                    name="linkDirection"
+                    checked={linkDirection === value}
+                    onChange={() => setLinkDirection(value)}
+                    className="accent-[#2f6b4f]"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+            {linkProject && (
+              <p className="text-xs text-[#5f6d64]">
+                연결 대상이 &apos;{linkProject.title}&apos; 프로젝트 소속이라
+                아래 메인 일정에 미리 넣었습니다. 프로젝트에 포함하지 않으려면
+                &apos;없음&apos;을 고르세요.
+              </p>
+            )}
+          </div>
+        )}
         <Field label="업무명">
           <input
             name="title"
@@ -5342,15 +6108,17 @@ function TaskForm({
             placeholder="예: 시설 조치 결과 확인"
           />
         </Field>
+        {schedule.fields}
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="시작일">
             <input
               name="date"
               type="date"
-              value={startDate}
+              value={schedule.computedDate ?? startDate}
+              readOnly={Boolean(schedule.computedDate)}
               onChange={(event) => updateStartDate(event.target.value)}
               required
-              className={inputClass}
+              className={`${inputClass} read-only:bg-[#f1f2ed] read-only:text-[#5f6d64]`}
             />
           </Field>
           <Field label="종료일">
@@ -5402,7 +6170,11 @@ function TaskForm({
             </select>
           </Field>
           <Field label="업무 분류">
-            <select name="category" className={inputClass}>
+            <select
+              name="category"
+              className={inputClass}
+              defaultValue={initialParent?.categoryId}
+            >
               {data.categories
                 .filter((item) => item.active)
                 .map((item) => (
@@ -6092,6 +6864,13 @@ function EditTaskForm({
     task.time ? (task.endTime ?? addMinutesToTime(task.time, 60)) : '',
   );
   const [autoEndDate, setAutoEndDate] = useState(startsOvernight);
+  const schedule = useProjectSchedule({
+    data,
+    taskId: task.id,
+    initialParentId: task.parentId,
+    initialOffsetDays: task.offsetDays,
+    onDate: updateStartDate,
+  });
 
   function updateStartDate(nextDate: string) {
     setStartDate(nextDate);
@@ -6165,6 +6944,8 @@ function EditTaskForm({
       priority: formText(form, 'priority') as Task['priority'],
       type: formText(form, 'type') as Task['type'],
       checklist,
+      parentId: schedule.parentId || undefined,
+      offsetDays: schedule.offsetDays,
     });
     close();
   }
@@ -6183,15 +6964,17 @@ function EditTaskForm({
             className={inputClass}
           />
         </Field>
+        {schedule.fields}
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="시작일">
             <input
               name="date"
               type="date"
-              value={startDate}
+              value={schedule.computedDate ?? startDate}
+              readOnly={Boolean(schedule.computedDate)}
               onChange={(event) => updateStartDate(event.target.value)}
               required
-              className={inputClass}
+              className={`${inputClass} read-only:bg-[#f1f2ed] read-only:text-[#5f6d64]`}
             />
           </Field>
           <Field label="종료일">
@@ -6382,6 +7165,13 @@ function TaskDetail({
   deleteTask,
   deleteComment,
   addComment,
+  openTask,
+  addSubtask,
+  createLinkedTask,
+  addLink,
+  removeLink,
+  applyTemplate,
+  saveTemplate,
 }: {
   task: Task;
   data: WorkspaceState;
@@ -6391,13 +7181,25 @@ function TaskDetail({
   edit: () => void;
   toggleChecklist: (taskId: string, checkId: string) => void;
   setTaskStatus: (taskId: string, status: Task['status']) => void;
-  deleteTask: (taskId: string) => void;
+  deleteTask: (taskId: string, childMode?: 'delete' | 'detach') => void;
   deleteComment: (taskId: string, commentId: string) => void;
   addComment: (body: string) => void;
+  openTask: (id: string) => void;
+  addSubtask: () => void;
+  createLinkedTask: () => void;
+  addLink: (ownerId: string, targetId: string, kind: TaskLink['kind']) => void;
+  removeLink: (ownerId: string, linkId: string) => void;
+  applyTemplate: (templateId: string) => void;
+  saveTemplate: () => void;
 }) {
   const [comment, setComment] = useState('');
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const category = data.categories.find((item) => item.id === task.categoryId);
   const names = assigneeNames(task, data);
+  const parent = task.parentId
+    ? data.tasks.find((item) => item.id === task.parentId)
+    : undefined;
+  const children = childTasksOf(data.tasks, task.id);
   function submitComment(event: FormSubmitEvent) {
     event.preventDefault();
     if (!comment.trim()) return;
@@ -6414,6 +7216,21 @@ function TaskDetail({
       close={close}
     >
       <div className="space-y-5">
+        {parent && (
+          <button
+            type="button"
+            onClick={() => openTask(parent.id)}
+            className="-mt-2 inline-flex items-center gap-1 rounded-full bg-[#fff1cc] px-3 py-1 text-xs font-black text-[#7a5b1f] hover:bg-[#ffe7a8]"
+          >
+            <CornerLeftUp className="size-3.5" />
+            {parent.title}
+            {task.offsetDays !== undefined && (
+              <span className="font-bold text-[#9a7a3a]">
+                · {formatOffset(task.offsetDays)}
+              </span>
+            )}
+          </button>
+        )}
         <div className="flex flex-wrap gap-2">
           <span className="rounded-full bg-[#e3eee7] px-2 py-1 text-xs font-bold text-[#2f6b4f]">
             {statusLabel[task.status]}
@@ -6464,6 +7281,29 @@ function TaskDetail({
             </div>
           </section>
         )}
+        {!parent && (children.length > 0 || canEdit) && (
+          <SubtaskSection
+            main={task}
+            subtasks={children}
+            data={data}
+            canEdit={canEdit}
+            isAdmin={isAdmin}
+            openTask={openTask}
+            setTaskStatus={setTaskStatus}
+            addSubtask={addSubtask}
+            applyTemplate={applyTemplate}
+            saveTemplate={saveTemplate}
+          />
+        )}
+        <LinkedTasksSection
+          task={task}
+          data={data}
+          canEdit={canEdit}
+          openTask={openTask}
+          createLinkedTask={createLinkedTask}
+          addLink={addLink}
+          removeLink={removeLink}
+        />
         <section>
           <h3 className="mb-2 text-sm font-black">
             댓글 {task.comments.length}
@@ -6511,10 +7351,41 @@ function TaskDetail({
             </Button>
           </form>
         </section>
+        {confirmingDelete && (
+          <div className="space-y-3 rounded-2xl border border-[#f0c9c4] bg-[#fdf0ee] p-3">
+            <p className="text-sm font-bold text-[#8f3a31]">
+              하위 일정 {children.length}건이 있습니다. 어떻게 삭제할까요?
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="destructive"
+                onClick={() => deleteTask(task.id, 'delete')}
+              >
+                하위 일정 {children.length}건도 삭제
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => deleteTask(task.id, 'detach')}
+              >
+                하위는 남기고 연결만 해제
+              </Button>
+              <Button variant="ghost" onClick={() => setConfirmingDelete(false)}>
+                취소
+              </Button>
+            </div>
+          </div>
+        )}
         <div className="flex flex-wrap justify-between gap-2 border-t border-[#e0e3de] pt-4">
           <div className="flex gap-2">
             {isAdmin && (
-              <Button variant="destructive" onClick={() => deleteTask(task.id)}>
+              <Button
+                variant="destructive"
+                onClick={() =>
+                  children.length
+                    ? setConfirmingDelete(true)
+                    : deleteTask(task.id)
+                }
+              >
                 <Trash2 />
                 삭제
               </Button>
@@ -6568,6 +7439,339 @@ function TaskDetail({
         </div>
       </div>
     </ModalShell>
+  );
+}
+
+/** 메인 일정 상세의 하위 일정 목록입니다. 체크는 기존 상태 규칙을 따릅니다:
+ * 팀원이 체크하면 "완료 요청", 관리자가 체크하면 "최종 완료"가 됩니다. */
+function SubtaskSection({
+  main,
+  subtasks,
+  data,
+  canEdit,
+  isAdmin,
+  openTask,
+  setTaskStatus,
+  addSubtask,
+  applyTemplate,
+  saveTemplate,
+}: {
+  main: Task;
+  subtasks: Task[];
+  data: WorkspaceState;
+  canEdit: boolean;
+  isAdmin: boolean;
+  openTask: (id: string) => void;
+  setTaskStatus: (taskId: string, status: Task['status']) => void;
+  addSubtask: () => void;
+  applyTemplate: (templateId: string) => void;
+  saveTemplate: () => void;
+}) {
+  const progress = projectProgress(subtasks);
+  const templates = data.projectTemplates ?? [];
+  function toggle(task: Task) {
+    if (task.status === 'completed') {
+      if (isAdmin) setTaskStatus(task.id, 'in_progress');
+      return;
+    }
+    if (task.status === 'completion_requested') {
+      setTaskStatus(task.id, isAdmin ? 'completed' : 'in_progress');
+      return;
+    }
+    setTaskStatus(task.id, isAdmin ? 'completed' : 'completion_requested');
+  }
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-black">하위 일정</h3>
+        {progress.total > 0 && (
+          <span className="flex items-center gap-2 text-xs font-bold text-[#4b5a51]">
+            <span className="w-24">
+              <ProgressBar percent={progress.percent} />
+            </span>
+            {progress.done}/{progress.total} · {progress.percent}%
+            {progress.delayed > 0 ? (
+              <span className="rounded-full bg-[#fde2e1] px-1.5 py-0.5 text-[10px] text-[#c0392b]">
+                지연 {progress.delayed}건
+              </span>
+            ) : (
+              <span className="text-[10px] text-[#748078]">지연 없음</span>
+            )}
+          </span>
+        )}
+      </div>
+      {subtasks.length > 0 ? (
+        <div className="space-y-1.5">
+          {subtasks.map((task) => {
+            const assignee = data.members.find(
+              (member) => member.id === task.assigneeId,
+            );
+            const overdueFlag = isTaskOverdue(task);
+            const checked =
+              task.status === 'completed' ||
+              task.status === 'completion_requested';
+            return (
+              <div
+                key={task.id}
+                className={`flex items-center gap-2 rounded-xl p-2 text-sm ${overdueFlag ? 'bg-[#fdecea]' : 'bg-[#f1f2ed]'}`}
+              >
+                <input
+                  type="checkbox"
+                  aria-label={`${task.title} 완료`}
+                  checked={checked}
+                  disabled={
+                    !canEdit || (task.status === 'completed' && !isAdmin)
+                  }
+                  onChange={() => toggle(task)}
+                  className={`size-5 shrink-0 ${task.status === 'completion_requested' ? 'accent-[#c99a2e]' : 'accent-[#2f6b4f]'}`}
+                />
+                <span className="w-12 shrink-0 text-xs font-black text-[#2f6b4f]">
+                  {formatOffset(
+                    task.offsetDays ?? dayDifference(main.date, task.date),
+                  )}
+                </span>
+                <span className="w-12 shrink-0 text-xs text-[#5f6d64]">
+                  {Number(task.date.slice(5, 7))}/{Number(task.date.slice(8, 10))}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => openTask(task.id)}
+                  className={`min-w-0 flex-1 truncate text-left font-bold hover:underline ${task.status === 'completed' ? 'text-[#879089] line-through' : overdueFlag ? 'text-[#c0392b]' : ''}`}
+                >
+                  {task.title}
+                </button>
+                <span className="hidden shrink-0 text-xs text-[#5f6d64] sm:inline">
+                  {assignee?.name ?? '미배정'}
+                </span>
+                <span className="shrink-0 text-[11px] font-bold text-[#5f6d64]">
+                  {overdueFlag ? '지연' : statusLabel[task.status]}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="rounded-xl bg-[#f1f2ed] p-3 text-xs text-[#748078]">
+          하위 일정을 추가하면 D-day 기준으로 날짜가 잡히고 진행률이 표시됩니다.
+        </p>
+      )}
+      {canEdit && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={addSubtask}>
+            <Plus />
+            하위 일정
+          </Button>
+          {templates.length > 0 && (
+            <select
+              aria-label="템플릿 불러오기"
+              value=""
+              onChange={(event) => {
+                if (!event.target.value) return;
+                const template = templates.find(
+                  (item) => item.id === event.target.value,
+                );
+                if (
+                  template &&
+                  window.confirm(
+                    `'${template.name}' 템플릿으로 하위 일정 ${template.items.length}건을 만들까요? (D-day ${formatDate(main.date)} 기준)`,
+                  )
+                )
+                  applyTemplate(template.id);
+              }}
+              className="h-8 rounded-lg border border-[#d8ded4] bg-white px-2 text-xs font-bold"
+            >
+              <option value="">템플릿 불러오기</option>
+              {templates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name} ({template.items.length}개)
+                </option>
+              ))}
+            </select>
+          )}
+          {subtasks.length > 0 && (
+            <Button type="button" variant="ghost" size="sm" onClick={saveTemplate}>
+              템플릿으로 저장
+            </Button>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** 업무 상세의 "연결된 업무" 목록입니다. 연결은 1단계만 보여주고 연결의 연결은 따라가지 않습니다. */
+function LinkedTasksSection({
+  task,
+  data,
+  canEdit,
+  openTask,
+  createLinkedTask,
+  addLink,
+  removeLink,
+}: {
+  task: Task;
+  data: WorkspaceState;
+  canEdit: boolean;
+  openTask: (id: string) => void;
+  createLinkedTask: () => void;
+  addLink: (ownerId: string, targetId: string, kind: TaskLink['kind']) => void;
+  removeLink: (ownerId: string, linkId: string) => void;
+}) {
+  const [picking, setPicking] = useState(false);
+  const [query, setQuery] = useState('');
+  const [pickKind, setPickKind] = useState<'before' | 'after' | 'related'>(
+    'related',
+  );
+  const linked = linkedTasksOf(data.tasks, task);
+  const linkedIds = new Set(
+    [...linked.before, ...linked.after, ...linked.related].map(
+      (entry) => entry.task.id,
+    ),
+  );
+  const keyword = query.trim().toLowerCase();
+  const results = keyword
+    ? data.tasks
+        .filter(
+          (item) =>
+            item.id !== task.id &&
+            !linkedIds.has(item.id) &&
+            item.title.toLowerCase().includes(keyword),
+        )
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .slice(0, 8)
+    : [];
+  const total = linkedIds.size;
+  if (!total && !canEdit) return null;
+
+  function pick(targetId: string) {
+    if (pickKind === 'before') addLink(task.id, targetId, 'prerequisite');
+    else if (pickKind === 'after') addLink(targetId, task.id, 'prerequisite');
+    else addLink(task.id, targetId, 'related');
+    setQuery('');
+    setPicking(false);
+  }
+
+  const groups = [
+    ['먼저 할 일', linked.before],
+    ['다음에 할 일', linked.after],
+    ['관련 업무', linked.related],
+  ] as const;
+  return (
+    <section>
+      <h3 className="mb-2 text-sm font-black">연결된 업무 {total || ''}</h3>
+      {total > 0 && (
+        <div className="space-y-2">
+          {groups.map(([label, entries]) =>
+            entries.length ? (
+              <div key={label}>
+                <p className="mb-1 text-[11px] font-black text-[#748078]">
+                  {label}
+                </p>
+                <div className="space-y-1">
+                  {entries.map(({ task: item, owner, linkId }) => (
+                    <div
+                      key={linkId}
+                      className="flex items-center gap-2 rounded-xl bg-[#f1f2ed] p-2 text-sm"
+                    >
+                      {label === '먼저 할 일' && item.status !== 'completed' && (
+                        <Lock className="size-3.5 shrink-0 text-[#a0762c]" />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => openTask(item.id)}
+                        className={`min-w-0 flex-1 truncate text-left font-bold hover:underline ${item.status === 'completed' ? 'text-[#879089] line-through' : ''}`}
+                      >
+                        <TaskTitleText task={item} tasks={data.tasks} />
+                      </button>
+                      <span className="shrink-0 text-[11px] font-bold text-[#5f6d64]">
+                        {formatDate(item.date)} · {statusLabel[item.status]}
+                      </span>
+                      {canEdit && (
+                        <button
+                          type="button"
+                          aria-label={`${item.title} 연결 해제`}
+                          onClick={() => removeLink(owner.id, linkId)}
+                          className="shrink-0 text-[#9aa49d] hover:text-[#a83f36]"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null,
+          )}
+        </div>
+      )}
+      {canEdit && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setPicking((open) => !open)}
+          >
+            <Link2 />
+            연결 추가
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={createLinkedTask}>
+            <Plus />
+            연결 업무 만들기
+          </Button>
+        </div>
+      )}
+      {picking && (
+        <div className="mt-2 space-y-2 rounded-2xl border border-[#dbe0d9] bg-white p-3">
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <select
+              aria-label="연결 종류"
+              value={pickKind}
+              onChange={(event) =>
+                setPickKind(event.target.value as typeof pickKind)
+              }
+              className="h-10 rounded-xl border border-[#d8ded4] bg-white px-2 text-sm font-bold"
+            >
+              <option value="before">이 업무보다 먼저 해야 함</option>
+              <option value="after">이 업무 다음에 함</option>
+              <option value="related">관련 있음</option>
+            </select>
+            <input
+              aria-label="연결할 업무 검색"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="업무명으로 검색"
+              className={inputClass}
+            />
+          </div>
+          {keyword && (
+            <div className="max-h-48 space-y-1 overflow-y-auto">
+              {results.length ? (
+                results.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => pick(item.id)}
+                    className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-sm hover:bg-[#edf4ef]"
+                  >
+                    <span className="min-w-0 truncate font-bold">
+                      <TaskTitleText task={item} tasks={data.tasks} />
+                    </span>
+                    <span className="shrink-0 text-[11px] text-[#748078]">
+                      {formatDate(item.date)}
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <p className="px-2 py-1.5 text-xs text-[#748078]">
+                  검색 결과가 없습니다.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
