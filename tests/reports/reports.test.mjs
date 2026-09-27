@@ -603,9 +603,7 @@ const harness = {
       const query = {
         select: () => query,
         // 예전 작성자별 행 조회(팀 저장소 최초 생성 때만 사용): 테스트에는 없음
-        neq: () => ({
-          then: (resolve) => resolve({ data: [], error: null }),
-        }),
+        neq: async () => ({ data: [], error: null }),
         eq: (k, v) => {
           filters[k] = v;
           return query;
