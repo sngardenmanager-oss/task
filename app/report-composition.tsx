@@ -3,7 +3,9 @@
 import { useState } from 'react';
 import { calculateComposition, dailyComposition } from '@/lib/reports';
 import {
+  barLabelMin,
   bracketLabelPosition,
+  smallBarParts,
   dailyColors,
   dailyLabels,
   dailyStack,
@@ -278,6 +280,24 @@ export default function RatioComposition({
       )}
       {ready ? (
         <div className="mt-3 text-xs font-bold">
+          {smallBarParts([0, 1, 2, 3].map(share)).map(({ i, start, width }) => (
+            <div
+              key={parts[i].label}
+              className="relative h-5"
+              style={{ color: colors[i] }}
+            >
+              <span
+                className="absolute bottom-0.5 inline-flex items-center gap-1.5 whitespace-nowrap"
+                style={bracketLabelPosition(start, width)}
+              >
+                <span
+                  className="inline-block size-2.5 rounded-sm"
+                  style={{ background: colors[i] }}
+                />
+                {parts[i].label} {fmt(share(i))}% ▾
+              </span>
+            </div>
+          ))}
           <div className="flex h-7 gap-[2px] overflow-hidden rounded border border-[#d8ded4] text-white">
             {order.map((i) => (
               <div
@@ -286,7 +306,8 @@ export default function RatioComposition({
                 className="overflow-hidden text-center leading-7 whitespace-nowrap"
                 title={parts[i].label + ' ' + fmt(share(i)) + '%'}
               >
-                {share(i) >= 8 && parts[i].label + ' ' + fmt(share(i)) + '%'}
+                {share(i) >= barLabelMin &&
+                  parts[i].label + ' ' + fmt(share(i)) + '%'}
               </div>
             ))}
           </div>

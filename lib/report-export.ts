@@ -619,6 +619,9 @@ const reportCss =
   '.bracket{position:relative;height:17px;font-size:10px;font-weight:700;margin-bottom:2px}' +
   '.bracket s{position:absolute;top:0;height:0;border-top:3px solid}' +
   '.bracket span{position:absolute;top:3px;white-space:nowrap}' +
+  '.callout{position:relative;height:15px;font-size:10px;font-weight:700}' +
+  '.callout span{position:absolute;bottom:0;white-space:nowrap}' +
+  '.callout i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}' +
   '.bar-legend{display:flex;flex-wrap:wrap;gap:2px 14px;font-size:10px;margin:2px 0 8px}' +
   '.bar-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}' +
   '.daily{border:1px solid #' +
@@ -670,6 +673,18 @@ export const dailyLabels = {
   parts: ['내국인 개인', '내국인 단체', '외국인 개인', '외국인 단체'],
 };
 export const dailyStack = [0, 1, 3, 2];
+// 구성 막대 칸 안에 글씨를 넣을 최소 비중(%). 이보다 좁은 칸은 막대 위에 이름표를 따로 단다.
+export const barLabelMin = 8;
+// 막대 안에 글씨가 안 들어가는 칸(예: 외국인 단체 0.9%)의 위치. 쌓는 순서(dailyStack) 기준.
+export function smallBarParts(shares: number[]) {
+  let start = 0;
+  return dailyStack.flatMap((i) => {
+    const width = shares[i];
+    const part = { i, start, width };
+    start += width;
+    return width < barLabelMin ? [part] : [];
+  });
+}
 // 구성비 괄호 글씨 위치(%). 괄호가 막대 끝 쪽에 있으면 끝에 맞춰 안쪽으로 붙여서,
 // 괄호가 아주 좁아도(예: 외국인 구성비 3%) 글씨가 잘리거나 막대 밖으로 나가지 않는다.
 export function bracketLabelPosition(
@@ -822,7 +837,23 @@ export function reportHtml(report: ReportDocument) {
   // 겹치지 않는 네 구분을 한 줄로 쌓고, 단체·외국인 구성비가 어디까지인지 괄호로 표시한다.
   // 칸이 좁아 막대 안에 글씨가 안 들어가도 아래 범례에 네 구분 비중을 모두 적는다.
   const compositionBar = barReady
-    ? '<div class="bar">' +
+    ? smallBarParts([0, 1, 2, 3].map(share))
+        .map(
+          ({ i, start, width }) =>
+            '<div class="callout" style="color:' +
+            partColors[i] +
+            '"><span style="' +
+            Object.entries(bracketLabelPosition(start, width))
+              .map(([k, v]) => k + ':' + v)
+              .join(';') +
+            '"><i style="background:' +
+            partColors[i] +
+            '"></i>' +
+            escapeHtml(parts[i].label + ' ' + share(i).toFixed(1) + '%') +
+            ' ▾</span></div>',
+        )
+        .join('') +
+      '<div class="bar">' +
       dailyStack
         .map(
           (i) =>
@@ -831,7 +862,7 @@ export function reportHtml(report: ReportDocument) {
             '%;background:' +
             partColors[i] +
             '">' +
-            (share(i) >= 8
+            (share(i) >= barLabelMin
               ? escapeHtml(parts[i].label + ' ' + share(i).toFixed(1) + '%')
               : '') +
             '</i>',
