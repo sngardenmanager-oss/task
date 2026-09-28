@@ -24,7 +24,7 @@ export const jejuHeaders = [
 ];
 export const jejuTitle = '제주도 입도객 현황 및 스누피가든 입장객 비중';
 export const jejuNote =
-  '비중 = 같은 국적의 스누피가든 입장객 ÷ 제주 입도객 × 100. 내국인 입장객은 전체 − 외국인입니다. 도민·재방문 및 입도일·관람일 차이가 포함될 수 있는 기간 비교 지표입니다.';
+  '비중 = 같은 국적의 스누피가든 입장객 ÷ 제주 입도객 × 100. 내국인 입장객은 전체 − 외국인입니다. 도민·재방문 및 입도일·관람일 차이가 포함될 수 있는 기간 비교 지표';
 const keys = ['total', 'domestic', 'foreign'] as const;
 type Category = (typeof keys)[number];
 const count = (v: unknown): v is number =>

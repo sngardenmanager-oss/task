@@ -88,9 +88,9 @@ export function JejuReport({
                         className={
                           cell +
                           (v.includes('증가')
-                            ? ' text-[#1f7a4a]'
+                            ? ' bg-[#fdecec] font-bold text-[#d32f2f]'
                             : v.includes('감소')
-                              ? ' text-[#b64034]'
+                              ? ' bg-[#e6effb] font-bold text-[#1565c0]'
                               : '')
                         }
                       >
@@ -103,7 +103,7 @@ export function JejuReport({
             </table>
           </div>
           <p className="mt-3 text-xs leading-relaxed text-[#64776a]">
-            {jejuNote} 비중 변화는 %p이며, 기간 자료가 부족하면 비중·증감은
+            {jejuNote}. 비중 변화는 %p이며, 기간 자료가 부족하면 비중·증감은
             계산하지 않습니다.
           </p>
           <p className="mt-2 text-xs text-[#64776a]">

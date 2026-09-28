@@ -59,6 +59,7 @@ import {
   exportReportExcel,
   printReport,
   statisticsCsv,
+  trendOf,
 } from '@/lib/report-export';
 
 const input =
@@ -71,6 +72,16 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
       {children}
     </label>
   );
+}
+// 증가는 빨강, 감소는 파랑으로 강조한다. 화면에 보이는 소수 첫째 자리 기준.
+function changeClass(change: number | null) {
+  const trend =
+    change === null ? undefined : trendOf(Number(change.toFixed(1)));
+  if (trend === 'up')
+    return 'inline-block rounded bg-[#fdecec] px-1.5 font-bold text-[#d32f2f]';
+  if (trend === 'down')
+    return 'inline-block rounded bg-[#e6effb] px-1.5 font-bold text-[#1565c0]';
+  return 'text-[#64776a]';
 }
 const ratioNotes: Record<string, string> = {
   '단체 구성비': '단체 ÷ 전체 · 외국인 단체 포함',
@@ -114,7 +125,7 @@ function MetricCards({
                   maximumFractionDigits: 1,
                 }) + m.unit}
           </p>
-          <p className="mt-1 text-sm text-[#64776a]">
+          <p className={'mt-1 text-sm ' + changeClass(m.change)}>
             {m.change === null
               ? m.comparison
               : (m.change > 0 ? '+' : '') + m.change.toFixed(1) + m.comparison}
@@ -284,7 +295,9 @@ export default function ReportsView({
           bases: {
             reports: Object.fromEntries(
               next.reports
-                .map((r) => [r, store.reports.find((b) => b.id === r.id)] as const)
+                .map(
+                  (r) => [r, store.reports.find((b) => b.id === r.id)] as const,
+                )
                 .filter(([r, b]) => !sameReportValue(r, b))
                 .map(([r, b]) => [r.id, b ?? null]),
             ),
@@ -786,7 +799,9 @@ export default function ReportsView({
               </p>
               {store.tracks
                 .filter(
-                  (t) => t.closed && t.scopeKey === scopeKey(report.config, report.ownerId),
+                  (t) =>
+                    t.closed &&
+                    t.scopeKey === scopeKey(report.config, report.ownerId),
                 )
                 .map((t) => (
                   <div

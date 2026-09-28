@@ -2,7 +2,13 @@
 
 import { useState } from 'react';
 import { calculateComposition, dailyComposition } from '@/lib/reports';
-import { dailyColors, dailyLabels, dailyStack } from '@/lib/report-export';
+import {
+  bracketLabelPosition,
+  dailyColors,
+  dailyLabels,
+  dailyStack,
+  trendOf,
+} from '@/lib/report-export';
 import type { Statistic } from '@/lib/report-types';
 
 const colors = dailyColors.parts;
@@ -13,6 +19,9 @@ const people = (n: number | null) =>
 const pct = (n: number | null) => (n === null ? '자료 없음' : fmt(n) + '%');
 const gap = (n: number | null) =>
   n === null ? '—' : (n > 0 ? '+' : '') + n.toFixed(1) + '%p';
+// 화면에 보이는 소수 첫째 자리 기준으로 증감 색을 정한다.
+const trend = (n: number | null) =>
+  n === null ? undefined : trendOf(Number(n.toFixed(1)));
 const cell = 'border border-[#d8ded4] p-2';
 
 function Legend({ items }: { items: [string, string][] }) {
@@ -59,7 +68,9 @@ export function DailyVisitorChart({
     list.map(([n, color, label]) => (
       <div
         key={label}
-        className="min-h-0 rounded-[2px]"
+        className={
+          'shrink rounded-[2px] ' + (n > 0 ? 'min-h-[2px]' : 'min-h-0')
+        }
         style={{ height: share(n, visitors) + '%', background: color }}
       />
     ));
@@ -199,6 +210,34 @@ export function DailyVisitorChart({
   );
 }
 
+// 구성비 괄호. 괄호가 좁아도 글씨는 잘리지 않고 막대 안쪽으로 붙어 보인다.
+function Bracket({
+  start,
+  width,
+  color,
+  text,
+}: {
+  start: number;
+  width: number;
+  color: string;
+  text: string;
+}) {
+  return (
+    <div className="relative h-5" style={{ color }}>
+      <div
+        className="absolute top-0 border-t-[3px]"
+        style={{ left: start + '%', width: width + '%', borderColor: color }}
+      />
+      <span
+        className="absolute top-[4px] whitespace-nowrap"
+        style={bracketLabelPosition(start, width)}
+      >
+        {text}
+      </span>
+    </div>
+  );
+}
+
 // 단체 구성비와 외국인 구성비는 외국인 단체를 함께 포함한다. 전체 입장객을
 // 겹치지 않는 네 구분으로 나눠서 두 비율이 어디서 겹치는지 보여준다.
 export default function RatioComposition({
@@ -247,27 +286,29 @@ export default function RatioComposition({
                 className="overflow-hidden text-center leading-7 whitespace-nowrap"
                 title={parts[i].label + ' ' + fmt(share(i)) + '%'}
               >
-                {share(i) >= 6 && parts[i].label + ' ' + fmt(share(i)) + '%'}
+                {share(i) >= 8 && parts[i].label + ' ' + fmt(share(i)) + '%'}
               </div>
             ))}
           </div>
-          <div className="flex">
-            <div style={{ width: share(0) + '%' }} />
-            <div
-              style={{ width: group + '%' }}
-              className="overflow-hidden border-t-[3px] border-[#2f6b4f] pt-0.5 text-center whitespace-nowrap text-[#2f6b4f]"
-            >
-              단체 구성비 {fmt(group)}%
-            </div>
-          </div>
-          <div className="flex">
-            <div style={{ width: share(0) + share(1) + '%' }} />
-            <div
-              style={{ width: foreign + '%' }}
-              className="overflow-hidden border-t-[3px] border-[#1b5e9e] pt-0.5 text-center whitespace-nowrap text-[#1b5e9e]"
-            >
-              외국인 구성비 {fmt(foreign)}%
-            </div>
+          <Bracket
+            start={share(0)}
+            width={group}
+            color="#2f6b4f"
+            text={'단체 구성비 ' + fmt(group) + '%'}
+          />
+          <Bracket
+            start={share(0) + share(1)}
+            width={foreign}
+            color="#1b5e9e"
+            text={'외국인 구성비 ' + fmt(foreign) + '%'}
+          />
+          <div className="mt-1 font-normal">
+            <Legend
+              items={order.map((i) => [
+                parts[i].label + ' ' + fmt(share(i)) + '%',
+                colors[i],
+              ])}
+            />
           </div>
         </div>
       ) : (
@@ -308,9 +349,11 @@ export default function RatioComposition({
                   className={
                     cell +
                     ' text-right font-bold ' +
-                    (p.shareChange !== null && p.shareChange < 0
-                      ? 'text-[#c0392b]'
-                      : 'text-[#1f7a4a]')
+                    (trend(p.shareChange) === 'up'
+                      ? 'bg-[#fdecec] text-[#d32f2f]'
+                      : trend(p.shareChange) === 'down'
+                        ? 'bg-[#e6effb] text-[#1565c0]'
+                        : '')
                   }
                 >
                   {gap(p.shareChange)}

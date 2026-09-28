@@ -91,9 +91,32 @@ const palette = {
   positive: { bg: 'E4F1FB', fg: '1B5E9E' },
   negative: { bg: 'FBE7E5', fg: 'A83F36' },
   agenda: { bg: 'FFF4D6', fg: '7A5A00' },
-  up: '1F7A4A',
-  down: 'C0392B',
+  // 증가는 빨강, 감소는 파랑으로 강조한다.
+  up: 'D32F2F',
+  down: '1565C0',
+  upBg: 'FDECEC',
+  downBg: 'E6EFFB',
 };
+// 증감을 보여주는 칸. 제주 표의 값 칸은 "+n명 증가"처럼 글로 적혀 있다.
+const trendHeaders = [
+  '전년 차이',
+  '증감',
+  '비교 상태',
+  '비중 차이(%p)',
+  '총 입도객',
+  '내국인 입도객',
+  '외국인 입도객',
+];
+export function trendOf(value: Cell): 'up' | 'down' | undefined {
+  if (typeof value === 'number')
+    return value > 0 ? 'up' : value < 0 ? 'down' : undefined;
+  const text = String(value ?? '');
+  if (/증가/.test(text) || /^\+\d/.test(text)) return 'up';
+  if (/감소/.test(text) || /^-\d/.test(text)) return 'down';
+  return undefined;
+}
+const trendIn = (header: string, value: Cell) =>
+  trendHeaders.includes(header) ? trendOf(value) : undefined;
 const statusColors: Record<string, { bg: string; fg: string }> = {
   '최종 완료': { bg: 'DDF1E3', fg: '1F6B3F' },
   '진행 중': { bg: 'DCEBFA', fg: '1B5E9E' },
@@ -404,7 +427,6 @@ export function reportTables(report: ReportDocument): ReportTable[] {
     },
   ];
 }
-const trendHeaders = ['전년 차이', '비중 차이(%p)'];
 const numberFormat = (v: number) => (Number.isInteger(v) ? '#,##0' : '#,##0.0');
 const visualLength = (text: string) => {
   let n = 0;
@@ -492,11 +514,16 @@ export async function exportReportExcel(report: ReportDocument) {
         if (typeof value === 'number') {
           cell.numFmt = numberFormat(value);
           cell.alignment = { vertical: 'top', horizontal: 'right' };
-          if (trendHeaders.includes(header))
-            cell.font = font({
-              bold: true,
-              color: { argb: 'FF' + (value < 0 ? palette.down : palette.up) },
-            });
+        }
+        const trend = trendIn(header, value);
+        if (trend) {
+          cell.fill = fill(trend === 'up' ? palette.upBg : palette.downBg);
+          cell.font = font({
+            bold: true,
+            color: {
+              argb: 'FF' + (trend === 'up' ? palette.up : palette.down),
+            },
+          });
         }
         const color = colorOf(header, value, seen);
         if (color) {
@@ -588,22 +615,32 @@ const reportCss =
   '.bar{display:flex;height:22px;border-radius:4px;overflow:hidden;border:1px solid #' +
   palette.line +
   ';margin:4px 0}.bar i{display:block;color:#fff;font:700 10px/22px "Malgun Gothic",sans-serif;text-align:center;overflow:hidden;white-space:nowrap}' +
-  '.bracket{display:flex;font-size:10px;font-weight:700;margin-bottom:6px}.bracket span{border-top:3px solid;padding-top:1px;text-align:center;overflow:hidden;white-space:nowrap}' +
+  // 괄호가 좁아도 글씨가 잘리지 않도록 글씨는 괄호 밖으로 넘쳐도 보이게 둔다.
+  '.bracket{position:relative;height:17px;font-size:10px;font-weight:700;margin-bottom:2px}' +
+  '.bracket s{position:absolute;top:0;height:0;border-top:3px solid}' +
+  '.bracket span{position:absolute;top:3px;white-space:nowrap}' +
+  '.bar-legend{display:flex;flex-wrap:wrap;gap:2px 14px;font-size:10px;margin:2px 0 8px}' +
+  '.bar-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}' +
   '.daily{border:1px solid #' +
   palette.line +
   ';border-radius:5px;padding:6px 8px;margin:6px 0;break-inside:avoid}' +
   '.daily h3{font-size:11px;margin:0 0 4px}.legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:9.5px;margin:2px 0 4px}' +
   '.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}' +
   '.drow{display:flex;align-items:flex-end;gap:2px}.drow .lab{width:70px;flex:none;font-size:9px;font-weight:700;align-self:center}' +
-  '.dcol{flex:1;min-width:0;display:flex;flex-direction:column-reverse;gap:1px;height:56px}' +
-  '.dcol b{display:block;min-height:0}.dcol.none{border:1px dashed #BCCBC0;border-radius:2px}' +
+  '.dcol{flex:1;min-width:0;display:flex;flex-direction:column-reverse;gap:1px;height:56px;overflow:hidden}' +
+  '.dcol b{display:block;flex-shrink:1}.dcol.none{border:1px dashed #BCCBC0;border-radius:2px}' +
   '.dnum,.ddate{display:flex;gap:2px;font-size:8px;color:#55605A}.dnum span,.ddate span{flex:1;min-width:0;text-align:center;overflow:hidden;white-space:nowrap}' +
   '.dnum:before,.ddate:before{content:"";width:70px;flex:none}' +
   '.up{color:#' +
   palette.up +
+  '!important;background:#' +
+  palette.upBg +
   '!important;font-weight:700}.down{color:#' +
   palette.down +
+  '!important;background:#' +
+  palette.downBg +
   '!important;font-weight:700}' +
+  '.card span.up,.card span.down{padding:0 4px;border-radius:3px}' +
   'table{border-collapse:collapse;width:100%;table-layout:fixed;margin-bottom:6px}' +
   'th,td{border:1px solid #' +
   palette.line +
@@ -633,6 +670,17 @@ export const dailyLabels = {
   parts: ['내국인 개인', '내국인 단체', '외국인 개인', '외국인 단체'],
 };
 export const dailyStack = [0, 1, 3, 2];
+// 구성비 괄호 글씨 위치(%). 괄호가 막대 끝 쪽에 있으면 끝에 맞춰 안쪽으로 붙여서,
+// 괄호가 아주 좁아도(예: 외국인 구성비 3%) 글씨가 잘리거나 막대 밖으로 나가지 않는다.
+export function bracketLabelPosition(
+  start: number,
+  width: number,
+): Record<string, string> {
+  const center = start + width / 2;
+  if (center > 70) return { right: (100 - start - width).toFixed(2) + '%' };
+  if (center < 30) return { left: start.toFixed(2) + '%' };
+  return { left: center.toFixed(2) + '%', transform: 'translateX(-50%)' };
+}
 function dailyChartHtml(report: ReportDocument) {
   const days = dailyComposition(
     report.statistics,
@@ -645,7 +693,9 @@ function dailyChartHtml(report: ReportDocument) {
   const seg = (n: number, total: number, color: string, title: string) =>
     '<b style="height:' +
     pct(n, total) +
-    '%;background:' +
+    // 비중이 아주 작아도(예: 외국인) 한 줄은 보이게 한다.
+    (n > 0 ? '%;min-height:2px' : '%') +
+    ';background:' +
     color +
     '" title="' +
     escapeHtml(
@@ -690,7 +740,7 @@ function dailyChartHtml(report: ReportDocument) {
     cells.map((c) => '<span>' + c + '</span>').join('') +
     '</div>';
   return (
-    '<div class="daily"><h3>일자별 입장객 분포 (막대 높이 = 그날 전체 입장객 100%)</h3>' +
+    '<div class="daily"><h3>일자별 입장객 분포</h3>' +
     line(
       'dnum',
       days.map((d) => (d.value ? formatNumber(d.value.visitors) : '미입력')),
@@ -722,7 +772,7 @@ export function reportHtml(report: ReportDocument) {
   };
   const cards = report.metrics
     .map((m) => {
-      const trend = m.change === null ? '' : m.change < 0 ? 'down' : 'up';
+      const trend = (m.change !== null && trendOf(round1(m.change))) || '';
       return (
         '<div class="card"><b>' +
         escapeHtml(m.label) +
@@ -738,56 +788,80 @@ export function reportHtml(report: ReportDocument) {
         (cardNote[m.label]
           ? '<em>' + escapeHtml(cardNote[m.label]) + '</em>'
           : '') +
-        '<em>' +
-        escapeHtml(
-          metricStatus(m) +
-            ' · 누락 당년 ' +
-            dayCount(m.missing) +
-            ' / 전년 ' +
-            dayCount(m.previousMissing),
-        ) +
-        '</em></div>'
+        '</div>'
       );
     })
     .join('');
   const partColors = dailyColors.parts;
   const parts = compositionOf(report);
   const barReady = parts.every((p) => p.currentShare !== null);
+  const share = (i: number) => parts[i].currentShare ?? 0;
+  const bracket = (
+    start: number,
+    width: number,
+    color: string,
+    text: string,
+  ) => {
+    const pos = bracketLabelPosition(start, width);
+    return (
+      '<div class="bracket" style="color:' +
+      color +
+      '"><s style="left:' +
+      start.toFixed(2) +
+      '%;width:' +
+      width.toFixed(2) +
+      '%"></s><span style="' +
+      Object.entries(pos)
+        .map(([k, v]) => k + ':' + v)
+        .join(';') +
+      '">' +
+      escapeHtml(text) +
+      '</span></div>'
+    );
+  };
   // 겹치지 않는 네 구분을 한 줄로 쌓고, 단체·외국인 구성비가 어디까지인지 괄호로 표시한다.
+  // 칸이 좁아 막대 안에 글씨가 안 들어가도 아래 범례에 네 구분 비중을 모두 적는다.
   const compositionBar = barReady
     ? '<div class="bar">' +
-      [0, 1, 3, 2]
-        .map((i) => [parts[i], i] as const)
+      dailyStack
         .map(
-          ([p, i]) =>
+          (i) =>
             '<i style="width:' +
-            p.currentShare!.toFixed(2) +
+            share(i).toFixed(2) +
             '%;background:' +
             partColors[i] +
             '">' +
-            (p.currentShare! >= 6
-              ? escapeHtml(p.label + ' ' + p.currentShare!.toFixed(1) + '%')
+            (share(i) >= 8
+              ? escapeHtml(parts[i].label + ' ' + share(i).toFixed(1) + '%')
               : '') +
             '</i>',
         )
         .join('') +
-      '</div><div class="bracket">' +
-      '<span style="width:' +
-      parts[0].currentShare!.toFixed(2) +
-      '%;border-color:transparent"></span>' +
-      '<span style="width:' +
-      (parts[1].currentShare! + parts[3].currentShare!).toFixed(2) +
-      '%;color:#2F6B4F;border-color:#2F6B4F">단체 구성비 ' +
-      (parts[1].currentShare! + parts[3].currentShare!).toFixed(1) +
-      '%</span></div><div class="bracket">' +
-      '<span style="width:' +
-      (parts[0].currentShare! + parts[1].currentShare!).toFixed(2) +
-      '%;border-color:transparent"></span>' +
-      '<span style="width:' +
-      (parts[2].currentShare! + parts[3].currentShare!).toFixed(2) +
-      '%;color:#1B5E9E;border-color:#1B5E9E">외국인 구성비 ' +
-      (parts[2].currentShare! + parts[3].currentShare!).toFixed(1) +
-      '%</span></div>'
+      '</div>' +
+      bracket(
+        share(0),
+        share(1) + share(3),
+        '#2F6B4F',
+        '단체 구성비 ' + (share(1) + share(3)).toFixed(1) + '%',
+      ) +
+      bracket(
+        share(0) + share(1),
+        share(2) + share(3),
+        '#1B5E9E',
+        '외국인 구성비 ' + (share(2) + share(3)).toFixed(1) + '%',
+      ) +
+      '<div class="bar-legend">' +
+      dailyStack
+        .map(
+          (i) =>
+            '<span><i style="background:' +
+            partColors[i] +
+            '"></i>' +
+            escapeHtml(parts[i].label + ' ' + share(i).toFixed(1) + '%') +
+            '</span>',
+        )
+        .join('') +
+      '</div>'
     : '';
   const seen: string[] = [];
   const section = (t: ReportTable) => {
@@ -815,12 +889,7 @@ export function reportHtml(report: ReportDocument) {
           const header = t.headers[col];
           const color = colorOf(header, v, seen);
           const isNumber = typeof v === 'number';
-          const trend =
-            trendHeaders.includes(header) && isNumber
-              ? v < 0
-                ? ' down'
-                : ' up'
-              : '';
+          const trend = trendIn(header, v);
           const style = toneColor
             ? col === 0
               ? badge(toneColor)
@@ -828,9 +897,10 @@ export function reportHtml(report: ReportDocument) {
             : color
               ? badge(color)
               : '';
+          const classes = [isNumber && 'num', trend].filter(Boolean).join(' ');
           return (
             '<td' +
-            (isNumber ? ' class="num' + trend + '"' : '') +
+            (classes ? ' class="' + classes + '"' : '') +
             style +
             '>' +
             escapeHtml(isNumber ? formatNumber(v) : v) +
