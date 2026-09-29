@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { useCurrentTeam, withTeam } from '@/app/team-context';
 import {
   Archive,
   CheckCircle2,
@@ -211,13 +212,15 @@ export default function ReportsView({
   const loading = useRef(false);
   const canEdit = actor.role !== 'commenter';
   const readOnly = report?.status === 'final';
+  // 보고서 저장소는 팀마다 따로입니다.
+  const teamId = useCurrentTeam()?.id;
   async function load() {
     if (loading.current || !canEdit) return;
     loading.current = true;
     setBusy(true);
     setError('');
     try {
-      const response = await fetch('/api/reports', {
+      const response = await fetch(withTeam('/api/reports', teamId), {
         headers: { authorization: 'Bearer ' + accessToken },
         cache: 'no-store',
       });
@@ -282,7 +285,7 @@ export default function ReportsView({
     setBusy(true);
     setError('');
     try {
-      const response = await fetch('/api/reports', {
+      const response = await fetch(withTeam('/api/reports', teamId), {
         method: 'PUT',
         headers: {
           authorization: 'Bearer ' + accessToken,

@@ -2,20 +2,16 @@ import {
   ApiError,
   apiErrorResponse,
   authenticateRequest,
-  requireWorkspaceMember,
+  requireTeamAccess,
 } from '@/lib/auth-server';
 import { readNewsDigest, writeNewsDigest } from '@/lib/news-store';
-import { readWorkspaceState } from '@/lib/workspace-store';
 import type { NewsItem } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
 async function requireAdminActor(request: Request) {
-  const [user, state] = await Promise.all([
-    authenticateRequest(request),
-    readWorkspaceState(),
-  ]);
-  const actor = requireWorkspaceMember(state, user.email!);
+  const user = await authenticateRequest(request);
+  const { actor } = await requireTeamAccess(user.email!);
   if (actor.role !== 'admin') {
     throw new ApiError('관광뉴스 관리는 관리자만 할 수 있습니다.', 403);
   }
@@ -24,11 +20,8 @@ async function requireAdminActor(request: Request) {
 
 export async function GET(request: Request) {
   try {
-    const [user, state] = await Promise.all([
-      authenticateRequest(request),
-      readWorkspaceState(),
-    ]);
-    requireWorkspaceMember(state, user.email!);
+    const user = await authenticateRequest(request);
+    await requireTeamAccess(user.email!);
     const { searchParams } = new URL(request.url);
     const limitValue = searchParams.get('limit');
     const requestedLimit = limitValue ? Number(limitValue) : Number.NaN;

@@ -20,24 +20,56 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { getSupabaseBrowser } from '@/lib/supabase-browser';
-import type { Member, RegistrationRequest, WorkspaceState } from '@/lib/types';
+import { ALL_TEAMS_ID } from '@/lib/team-access';
+import type {
+  Member,
+  RegistrationRequest,
+  Team,
+  WorkspaceState,
+} from '@/lib/types';
 
 const loadWorkCalendarApp = () => import('@/app/work-calendar-app');
 const WorkCalendarApp = dynamic(loadWorkCalendarApp, {
   ssr: false,
   loading: () => <FullScreenMessage label="업무 화면을 준비하는 중입니다." />,
 });
+const MasterOverview = dynamic(() => import('@/app/master-overview'), {
+  ssr: false,
+  loading: () => <FullScreenMessage label="전체 팀 화면을 준비하는 중입니다." />,
+});
 
 type WorkspacePayload = {
   state: WorkspaceState;
   actor: Member;
+  team: Team;
+  teams: Team[];
+  isMaster: boolean;
   pendingRegistrations: RegistrationRequest[];
 };
+
+/** 마지막으로 본 팀을 기기에 기억합니다. 서버가 다시 확인하므로 편의용입니다. */
+const teamStorageKey = (email: string) =>
+  `snoopy-work-calendar-team:${email.toLowerCase()}`;
+function readStoredTeam(email: string) {
+  try {
+    return window.localStorage.getItem(teamStorageKey(email));
+  } catch {
+    return null;
+  }
+}
+function storeTeam(email: string, teamId: string | null) {
+  try {
+    if (teamId) window.localStorage.setItem(teamStorageKey(email), teamId);
+    else window.localStorage.removeItem(teamStorageKey(email));
+  } catch {
+    // 저장소를 못 써도 기본 팀으로 열린다.
+  }
+}
 type GateState =
   | { kind: 'checking' }
   | { kind: 'signed-out' }
   | { kind: 'loading' }
-  | { kind: 'ready'; workspace: WorkspacePayload }
+  | { kind: 'ready'; workspace: WorkspacePayload; allTeams: boolean }
   | { kind: 'denied'; message: string; code?: string };
 
 export default function AuthGate() {
@@ -45,6 +77,8 @@ export default function AuthGate() {
   const [session, setSession] = useState<Session | null>(null);
   const [gate, setGate] = useState<GateState>({ kind: 'checking' });
   const [reloadToken, setReloadToken] = useState(0);
+  /** 보고 있는 팀. null이면 서버가 정하는 기본 팀, ALL_TEAMS_ID이면 마스터의 전체 팀 화면입니다. */
+  const [teamId, setTeamId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -70,6 +104,7 @@ export default function AuthGate() {
   }, [supabase]);
 
   const accessToken = session?.access_token;
+  const sessionEmail = session?.user.email ?? '';
 
   useEffect(() => {
     if (!accessToken) return;
@@ -77,15 +112,34 @@ export default function AuthGate() {
     void loadWorkCalendarApp();
     void (async () => {
       try {
-        const response = await fetch('/api/state', {
-          headers: { authorization: `Bearer ${accessToken}` },
-          cache: 'no-store',
-          signal: controller.signal,
-        });
-        const result = (await response.json()) as WorkspacePayload & {
+        const wanted = teamId ?? readStoredTeam(sessionEmail);
+        const load = (team: string | null) =>
+          fetch(
+            team && team !== ALL_TEAMS_ID
+              ? `/api/state?team=${encodeURIComponent(team)}`
+              : '/api/state',
+            {
+              headers: { authorization: `Bearer ${accessToken}` },
+              cache: 'no-store',
+              signal: controller.signal,
+            },
+          );
+        let response = await load(wanted);
+        let result = (await response.json()) as WorkspacePayload & {
           error?: string;
           code?: string;
         };
+        // 기억해 둔 팀에서 빠졌거나 팀이 없어졌으면 기본 팀으로 다시 연다.
+        if (
+          wanted &&
+          (result.code === 'team_forbidden' || response.status === 404)
+        ) {
+          storeTeam(sessionEmail, null);
+          response = await load(null);
+          result = (await response.json()) as typeof result;
+        }
+        if (response.ok && wanted === ALL_TEAMS_ID && !result.isMaster)
+          storeTeam(sessionEmail, null);
         if (!response.ok) {
           setGate({
             kind: 'denied',
@@ -94,7 +148,11 @@ export default function AuthGate() {
           });
           return;
         }
-        setGate({ kind: 'ready', workspace: result });
+        setGate({
+          kind: 'ready',
+          workspace: result,
+          allTeams: wanted === ALL_TEAMS_ID && result.isMaster,
+        });
       } catch (error: unknown) {
         if (controller.signal.aborted) return;
         const message =
@@ -105,7 +163,17 @@ export default function AuthGate() {
       }
     })();
     return () => controller.abort();
-  }, [accessToken, reloadToken]);
+  }, [accessToken, reloadToken, sessionEmail, teamId]);
+
+  const switchTeam = useCallback(
+    (nextTeamId: string) => {
+      storeTeam(sessionEmail, nextTeamId);
+      setGate({ kind: 'loading' });
+      setTeamId(nextTeamId);
+      setReloadToken((value) => value + 1);
+    },
+    [sessionEmail],
+  );
 
   const signOut = useCallback(async () => {
     setGate({ kind: 'checking' });
@@ -169,12 +237,27 @@ export default function AuthGate() {
     );
   }
 
+  if (gate.allTeams) {
+    return (
+      <MasterOverview
+        teams={gate.workspace.teams}
+        accessToken={session.access_token}
+        onSwitchTeam={switchTeam}
+        onSignOut={signOut}
+      />
+    );
+  }
+
   return (
     <WorkCalendarApp
-      key={session.user.id}
+      key={`${session.user.id}:${gate.workspace.team.id}`}
       initialData={gate.workspace.state}
       initialActor={gate.workspace.actor}
       initialPendingRegistrations={gate.workspace.pendingRegistrations}
+      team={gate.workspace.team}
+      teams={gate.workspace.teams}
+      isMaster={gate.workspace.isMaster}
+      onSwitchTeam={switchTeam}
       accessToken={session.access_token}
       onSignOut={signOut}
     />

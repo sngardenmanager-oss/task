@@ -14,6 +14,36 @@ export type Member = {
   active: boolean;
 };
 
+/** 팀마다 작업공간(WorkspaceState)이 하나씩 있습니다. */
+export type Team = {
+  id: string;
+  name: string;
+  color: string;
+  active: boolean;
+  sortOrder: number;
+};
+
+/** 누가 어느 팀에 들어갈 수 있는지의 기준입니다. 역할의 기준은 팀 작업공간의 members입니다. */
+export type TeamMembership = {
+  teamId: string;
+  email: string;
+  memberId: string;
+  role: Role;
+  active: boolean;
+};
+
+/** 마스터 '전체 팀' 통합 관제에 쓰는 팀 하나의 요약입니다. 업무에는 댓글 본문 대신 댓글 수만 있습니다. */
+export type OverviewTeam = {
+  team: Team;
+  members: Member[];
+  categories: Category[];
+  tasks: (Task & { commentCount: number })[];
+  openNotes: number;
+};
+
+/** 마스터 팀 관리 화면에 보이는 소속 한 줄입니다. */
+export type TeamDirectoryEntry = TeamMembership & { name: string };
+
 export type RegistrationRequest = {
   id: string;
   name: string;

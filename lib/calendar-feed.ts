@@ -24,3 +24,22 @@ export function isValidCalendarFeedToken(memberId: string, token: string) {
   const received = Buffer.from(token);
   return expected.length === received.length && timingSafeEqual(expected, received);
 }
+
+/** 팀별 구독 링크용 토큰입니다. 팀 id까지 서명하므로 링크의 팀 값을 바꾸면 무효가 됩니다.
+ * memberId가 'master'이면 마스터용 링크(팀 하나 또는 전체 팀)입니다. */
+export function teamCalendarFeedToken(teamId: string, memberId: string) {
+  return createHmac('sha256', feedSecret())
+    .update(`calendar-feed:v2:${teamId}:${memberId}`)
+    .digest('base64url')
+    .slice(0, 32);
+}
+
+export function isValidTeamCalendarFeedToken(
+  teamId: string,
+  memberId: string,
+  token: string,
+) {
+  const expected = Buffer.from(teamCalendarFeedToken(teamId, memberId));
+  const received = Buffer.from(token);
+  return expected.length === received.length && timingSafeEqual(expected, received);
+}

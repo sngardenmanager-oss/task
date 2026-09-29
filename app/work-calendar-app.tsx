@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type ReactNode,
 } from 'react';
 import {
   Bell,
@@ -43,12 +44,21 @@ import {
   ShieldCheck,
   Trash2,
   Upload,
+  UserMinus,
   UserPlus,
   Users,
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import ReportsView from '@/app/reports-view';
+import {
+  CurrentTeamContext,
+  useCurrentTeam,
+  withTeam,
+} from '@/app/team-context';
+import TeamManagementPanel from '@/app/team-management';
+import TeamSwitcher from '@/app/team-switcher';
+import { LEGACY_TEAM_ID } from '@/lib/team-access';
 import { buildCalendarIcs } from '@/lib/ical';
 import type {
   Category,
@@ -63,6 +73,7 @@ import type {
   SpecialNote,
   Task,
   TaskLink,
+  Team,
   WorkspaceState,
 } from '@/lib/types';
 
@@ -116,6 +127,7 @@ const NEWS_RECENT_DAYS = 10;
 function isTaskVisibleTo(task: Task, member: Pick<Member, 'id' | 'email'>) {
   return (
     member.email === FULL_ACCESS_EMAIL ||
+    member.id === 'system-master' ||
     task.assigneeId === member.id ||
     task.collaborators.includes(member.id)
   );
@@ -590,16 +602,30 @@ function exportCalendarIcal(data: WorkspaceState) {
   );
 }
 
+/** 기기에 남기는 오프라인 사본의 키. 파크사업팀은 팀 분리 전 키를 그대로 씁니다. */
+function offlineKey(email: string, teamId: string) {
+  const base = `snoopy-work-calendar-offline:${email.toLowerCase()}`;
+  return teamId === LEGACY_TEAM_ID ? base : `${base}:${teamId}`;
+}
+
 export default function WorkCalendarApp({
   initialData,
   initialActor,
   initialPendingRegistrations,
+  team,
+  teams,
+  isMaster,
+  onSwitchTeam,
   accessToken,
   onSignOut,
 }: {
   initialData: WorkspaceState;
   initialActor: Member;
   initialPendingRegistrations: RegistrationRequest[];
+  team: Team;
+  teams: Team[];
+  isMaster: boolean;
+  onSwitchTeam: (teamId: string) => void;
   accessToken: string;
   onSignOut: () => Promise<void>;
 }) {
@@ -671,7 +697,7 @@ export default function WorkCalendarApp({
   }, [selectedTime]);
 
   useEffect(() => {
-    const key = `snoopy-work-calendar-offline:${actor.email.toLowerCase()}`;
+    const key = offlineKey(actor.email, team.id);
     const timer = window.setTimeout(() => {
       try {
         const raw = window.localStorage.getItem(key);
@@ -687,7 +713,7 @@ export default function WorkCalendarApp({
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [actor.email, initialData]);
+  }, [actor.email, initialData, team.id]);
 
   useEffect(() => {
     const currentEntry = (): AppHistoryEntry => ({
@@ -765,11 +791,11 @@ export default function WorkCalendarApp({
     const timer = window.setTimeout(async () => {
       const deletedIds = [...deletedIdsRef.current];
       window.localStorage.setItem(
-        `snoopy-work-calendar-offline:${actor.email.toLowerCase()}`,
+        offlineKey(actor.email, team.id),
         JSON.stringify(data),
       );
       try {
-        const response = await fetch('/api/state', {
+        const response = await fetch(withTeam('/api/state', team.id), {
           method: 'PUT',
           headers: {
             'content-type': 'application/json',
@@ -798,7 +824,7 @@ export default function WorkCalendarApp({
           JSON.stringify(result.state) !== JSON.stringify(data)
         ) {
           window.localStorage.setItem(
-            `snoopy-work-calendar-offline:${actor.email.toLowerCase()}`,
+            offlineKey(actor.email, team.id),
             JSON.stringify(result.state),
           );
           skipSave.current = true;
@@ -811,7 +837,7 @@ export default function WorkCalendarApp({
       }
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [accessToken, actor.email, data, onSignOut]);
+  }, [accessToken, actor.email, data, onSignOut, team.id]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1466,7 +1492,7 @@ export default function WorkCalendarApp({
     setRefreshing(true);
     try {
       const deletedIds = [...deletedIdsRef.current];
-      const response = await fetch('/api/state', {
+      const response = await fetch(withTeam('/api/state', team.id), {
         method: 'PUT',
         headers: {
           'content-type': 'application/json',
@@ -1488,7 +1514,7 @@ export default function WorkCalendarApp({
       deletedIds.forEach((id) => deletedIdsRef.current.delete(id));
       if (result.state) {
         window.localStorage.setItem(
-          `snoopy-work-calendar-offline:${actor.email.toLowerCase()}`,
+          offlineKey(actor.email, team.id),
           JSON.stringify(result.state),
         );
         skipSave.current = true;
@@ -1508,7 +1534,7 @@ export default function WorkCalendarApp({
 
   async function refreshPendingRegistrations(silent = false) {
     try {
-      const response = await fetch('/api/auth/registrations', {
+      const response = await fetch(withTeam('/api/auth/registrations', team.id), {
         headers: { authorization: `Bearer ${accessToken}` },
         cache: 'no-store',
       });
@@ -1697,21 +1723,18 @@ export default function WorkCalendarApp({
     }
   }
 
-  async function approveRegistration(
-    id: string,
-    role: Exclude<Role, 'admin'>,
-    team: string,
-  ) {
-    const response = await fetch('/api/auth/registrations', {
+  async function approveRegistration(id: string, role: Role, teamId: string) {
+    const response = await fetch(withTeam('/api/auth/registrations', team.id), {
       method: 'PATCH',
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify({ id, role, team }),
+      body: JSON.stringify({ id, role, teamId }),
     });
     const result = (await response.json()) as {
       member?: Member;
+      teamId?: string;
       registrations?: RegistrationRequest[];
       error?: string;
     };
@@ -1722,12 +1745,64 @@ export default function WorkCalendarApp({
     if (!response.ok || !result.member) {
       throw new Error(result.error ?? '가입 승인을 완료하지 못했습니다.');
     }
-    setData((current) => ({
-      ...current,
-      members: [...current.members, result.member!],
-    }));
+    // 지금 보고 있는 팀으로 승인했을 때만 화면의 사용자 목록에 더합니다(서버에는 이미 저장됨).
+    if (result.teamId === team.id) {
+      const approved = result.member;
+      skipSave.current = true;
+      setData((current) => ({
+        ...current,
+        members: current.members.some((member) => member.id === approved.id)
+          ? current.members.map((member) =>
+              member.id === approved.id ? approved : member,
+            )
+          : [...current.members, approved],
+      }));
+    }
     setPendingRegistrations(result.registrations ?? []);
-    setToast(`${result.member.name}님의 가입을 승인했습니다.`);
+    const teamName =
+      teams.find((item) => item.id === result.teamId)?.name ?? team.name;
+    setToast(`${result.member.name}님을 ${teamName}에 승인했습니다.`);
+  }
+
+  /** 팀 관리자·마스터가 팀원을 팀에서 내보냅니다. 서버가 돌려준 팀 데이터로 화면을 맞춥니다. */
+  async function removeFromTeam(member: Member) {
+    if (
+      !window.confirm(
+        `${member.name}님을 ${team.name}에서 내보낼까요?\n과거 기록은 남고, 미완료 업무는 관리자에게 넘어갑니다. 다시 들어오려면 가입 승인을 받아야 합니다.`,
+      )
+    )
+      return;
+    try {
+      const response = await fetch('/api/teams', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          action: 'removeMember',
+          teamId: team.id,
+          email: member.email,
+        }),
+      });
+      const result = (await response.json()) as {
+        state?: WorkspaceState;
+        error?: string;
+      };
+      if (response.status === 401) {
+        await onSignOut();
+        return;
+      }
+      if (!response.ok || !result.state)
+        throw new Error(result.error ?? '팀에서 내보내지 못했습니다.');
+      skipSave.current = true;
+      setData(result.state);
+      setToast(`${member.name}님을 팀에서 내보냈습니다.`);
+    } catch (error) {
+      setToast(
+        error instanceof Error ? error.message : '팀에서 내보내지 못했습니다.',
+      );
+    }
   }
 
   function navigate(next: View) {
@@ -1850,7 +1925,18 @@ export default function WorkCalendarApp({
     return () => lifecycle.abort();
   }, []);
 
+  const teamSwitcher =
+    isMaster || teams.length > 1 ? (
+      <TeamSwitcher
+        current={team.id}
+        teams={teams}
+        isMaster={isMaster}
+        onSwitch={onSwitchTeam}
+      />
+    ) : null;
+
   return (
+    <CurrentTeamContext.Provider value={team}>
     <main className="min-h-screen bg-[#f5f3ec] text-[#26352d]">
       <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-[#d8ded4] bg-[#fbfaf5]/95 px-4 backdrop-blur md:px-7">
         <div className="flex items-center gap-3">
@@ -1871,7 +1957,7 @@ export default function WorkCalendarApp({
               SNOOPY GARDEN
             </p>
             <h1 className="text-sm font-extrabold tracking-tight sm:text-base">
-              파크사업팀 워크 캘린더
+              {team.name} 워크 캘린더
             </h1>
           </div>
         </div>
@@ -1920,6 +2006,7 @@ export default function WorkCalendarApp({
           view={view}
           navigate={navigate}
           openCreateTask={openCreateTask}
+          teamSwitcher={teamSwitcher}
         />
         {mobileMenu && (
           <div className="fixed inset-0 z-30 md:hidden">
@@ -1933,6 +2020,7 @@ export default function WorkCalendarApp({
                 view={view}
                 navigate={navigate}
                 openCreateTask={openCreateTask}
+                teamSwitcher={teamSwitcher}
               />
             </aside>
           </div>
@@ -2078,8 +2166,14 @@ export default function WorkCalendarApp({
               openMember={() => openModal('member')}
               refreshPendingRegistrations={refreshPendingRegistrations}
               approveRegistration={approveRegistration}
+              removeFromTeam={removeFromTeam}
               updateData={updateData}
               deleteTemplate={deleteProjectTemplate}
+              team={team}
+              teams={teams}
+              isMaster={isMaster}
+              accessToken={accessToken}
+              onTeamsChanged={() => onSwitchTeam(team.id)}
             />
           )}
           {view === 'notifications' && (
@@ -2262,6 +2356,7 @@ export default function WorkCalendarApp({
         </output>
       )}
     </main>
+    </CurrentTeamContext.Provider>
   );
 }
 
@@ -2269,10 +2364,12 @@ function Sidebar({
   view,
   navigate,
   openCreateTask,
+  teamSwitcher,
 }: {
   view: View;
   navigate: (view: View) => void;
   openCreateTask: () => void;
+  teamSwitcher: ReactNode;
 }) {
   return (
     <aside className="hidden min-h-[calc(100vh-64px)] border-r border-[#d8ded4] bg-[#fbfaf5] p-4 md:block">
@@ -2280,6 +2377,7 @@ function Sidebar({
         view={view}
         navigate={navigate}
         openCreateTask={openCreateTask}
+        teamSwitcher={teamSwitcher}
       />
     </aside>
   );
@@ -2289,10 +2387,12 @@ function SidebarContent({
   view,
   navigate,
   openCreateTask,
+  teamSwitcher,
 }: {
   view: View;
   navigate: (view: View) => void;
   openCreateTask: () => void;
+  teamSwitcher: ReactNode;
 }) {
   const items: View[] = [
     'today',
@@ -2306,6 +2406,7 @@ function SidebarContent({
   ];
   return (
     <>
+      {teamSwitcher}
       <Button
         className="mb-6 h-11 w-full rounded-xl bg-[#2f6b4f] text-white shadow-sm hover:bg-[#255940]"
         onClick={openCreateTask}
@@ -3218,11 +3319,12 @@ function CalendarSubscribeModal({
   const [url, setUrl] = useState('');
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const teamId = useCurrentTeam()?.id;
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
       try {
-        const response = await fetch('/api/calendar/link', {
+        const response = await fetch(withTeam('/api/calendar/link', teamId), {
           headers: { authorization: `Bearer ${accessToken}` },
           cache: 'no-store',
           signal: controller.signal,
@@ -3237,7 +3339,7 @@ function CalendarSubscribeModal({
       }
     })();
     return () => controller.abort();
-  }, [accessToken]);
+  }, [accessToken, teamId]);
   async function copy() {
     try {
       await navigator.clipboard.writeText(url);
@@ -4507,27 +4609,33 @@ function NewsView({
 
 function LegacySettingsView({
   data,
+  actor,
   isAdmin,
   pendingRegistrations,
   openMember,
   refreshPendingRegistrations,
   approveRegistration,
+  removeFromTeam,
   updateData,
+  team,
+  teams,
+  isMaster,
 }: {
   data: WorkspaceState;
+  actor: Member;
   isAdmin: boolean;
   pendingRegistrations: RegistrationRequest[];
   openMember: () => void;
   refreshPendingRegistrations: () => Promise<void>;
-  approveRegistration: (
-    id: string,
-    role: Exclude<Role, 'admin'>,
-    team: string,
-  ) => Promise<void>;
+  approveRegistration: (id: string, role: Role, teamId: string) => Promise<void>;
+  removeFromTeam: (member: Member) => Promise<void>;
   updateData: (
     fn: (data: WorkspaceState) => WorkspaceState,
     message?: string,
   ) => void;
+  team: Team;
+  teams: Team[];
+  isMaster: boolean;
 }) {
   function addCategory() {
     const name = window.prompt('새 업무 분류 이름을 입력하세요.');
@@ -4594,7 +4702,9 @@ function LegacySettingsView({
                 </span>
               </div>
               <p className="mt-1 text-xs text-[#748078]">
-                권한과 소속을 확인한 뒤 승인해 주세요.
+                {isMaster
+                  ? '팀과 권한을 골라 승인해 주세요. 새 팀의 첫 관리자는 여기서 지정합니다.'
+                  : `승인하면 ${team.name}에 소속됩니다. 관리자 지정은 마스터에게 요청해 주세요.`}
               </p>
             </div>
             <Button
@@ -4612,6 +4722,9 @@ function LegacySettingsView({
                   key={registration.id}
                   registration={registration}
                   approveRegistration={approveRegistration}
+                  team={team}
+                  teams={teams}
+                  isMaster={isMaster}
                 />
               ))
             ) : (
@@ -4653,6 +4766,20 @@ function LegacySettingsView({
                     {member.email} · {roleLabel(member)}
                   </span>
                 </span>
+                {member.active &&
+                  isAdmin &&
+                  member.id !== actor.id &&
+                  (member.role !== 'admin' || isMaster) && (
+                    <Button
+                      aria-label={`${member.name} 팀에서 내보내기`}
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void removeFromTeam(member)}
+                    >
+                      <UserMinus />
+                      내보내기
+                    </Button>
+                  )}
                 {member.active && member.role !== 'admin' && isAdmin && (
                   <Button
                     aria-label={`${member.name} 퇴사 처리`}
@@ -4775,8 +4902,14 @@ function SettingsView({
   openMember,
   refreshPendingRegistrations,
   approveRegistration,
+  removeFromTeam,
   updateData,
   deleteTemplate,
+  team,
+  teams,
+  isMaster,
+  accessToken,
+  onTeamsChanged,
 }: {
   data: WorkspaceState;
   actor: Member;
@@ -4784,19 +4917,28 @@ function SettingsView({
   pendingRegistrations: RegistrationRequest[];
   openMember: () => void;
   refreshPendingRegistrations: () => Promise<void>;
-  approveRegistration: (
-    id: string,
-    role: Exclude<Role, 'admin'>,
-    team: string,
-  ) => Promise<void>;
+  approveRegistration: (id: string, role: Role, teamId: string) => Promise<void>;
+  removeFromTeam: (member: Member) => Promise<void>;
   updateData: (
     fn: (data: WorkspaceState) => WorkspaceState,
     message?: string,
   ) => void;
   deleteTemplate: (templateId: string) => void;
+  team: Team;
+  teams: Team[];
+  isMaster: boolean;
+  accessToken: string;
+  onTeamsChanged: () => void;
 }) {
   return (
     <div className="space-y-5">
+      {isMaster && (
+        <TeamManagementPanel
+          accessToken={accessToken}
+          currentTeamId={team.id}
+          onTeamsChanged={onTeamsChanged}
+        />
+      )}
       <DataTransferPanel
         data={data}
         actor={actor}
@@ -4811,12 +4953,17 @@ function SettingsView({
       {isAdmin && <AdminMasterEditPanel data={data} updateData={updateData} />}
       <LegacySettingsView
         data={data}
+        actor={actor}
         isAdmin={isAdmin}
         pendingRegistrations={pendingRegistrations}
         openMember={openMember}
         refreshPendingRegistrations={refreshPendingRegistrations}
         approveRegistration={approveRegistration}
+        removeFromTeam={removeFromTeam}
         updateData={updateData}
+        team={team}
+        teams={teams}
+        isMaster={isMaster}
       />
     </div>
   );
@@ -4900,8 +5047,6 @@ function AdminMasterEditPanel({
   function editMember(member: Member) {
     const name = window.prompt('이름', member.name);
     if (name === null || !name.trim()) return;
-    const team = window.prompt('소속', member.team);
-    if (team === null || !team.trim()) return;
     const roleText = window.prompt(
       '권한: admin / member / commenter',
       member.role,
@@ -4919,7 +5064,6 @@ function AdminMasterEditPanel({
             ? {
                 ...item,
                 name: name.trim(),
-                team: team.trim(),
                 role: roleText as Role,
               }
             : item,
@@ -4946,7 +5090,8 @@ function AdminMasterEditPanel({
       <div className="mb-4">
         <h3 className="font-black">관리자 전체 수정</h3>
         <p className="mt-1 text-xs text-[#748078]">
-          사용자·소속·권한과 분류 이름·색상을 수정할 수 있습니다. 업무, 루틴,
+          사용자 이름·권한과 분류 이름·색상을 수정할 수 있습니다. 소속 팀은
+          마스터가 팀 관리에서 바꿉니다. 업무, 루틴,
           특이사항, 뉴스는 각 화면에서 수정합니다.
         </p>
       </div>
@@ -5443,25 +5588,26 @@ function DataTransferPanel({
 function PendingRegistrationCard({
   registration,
   approveRegistration,
+  team: currentTeam,
+  teams,
+  isMaster,
 }: {
   registration: RegistrationRequest;
-  approveRegistration: (
-    id: string,
-    role: Exclude<Role, 'admin'>,
-    team: string,
-  ) => Promise<void>;
+  approveRegistration: (id: string, role: Role, teamId: string) => Promise<void>;
+  team: Team;
+  teams: Team[];
+  isMaster: boolean;
 }) {
-  const [role, setRole] = useState<Exclude<Role, 'admin'>>('member');
-  const [team, setTeam] = useState('파크사업팀');
+  const [role, setRole] = useState<Role>('member');
+  const [teamId, setTeamId] = useState(currentTeam.id);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   async function submit(event: FormSubmitEvent) {
     event.preventDefault();
-    if (!team.trim()) return;
     setBusy(true);
     setError('');
     try {
-      await approveRegistration(registration.id, role, team.trim());
+      await approveRegistration(registration.id, role, teamId);
     } catch (caught) {
       setError(
         caught instanceof Error
@@ -5500,22 +5646,31 @@ function PendingRegistrationCard({
         </div>
       </div>
       <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_150px_auto]">
-        <input
-          aria-label={`${registration.name} 소속`}
-          value={team}
-          onChange={(event) => setTeam(event.target.value)}
-          required
-          className={inputClass}
-          placeholder="소속"
-        />
+        {isMaster ? (
+          <select
+            aria-label={`${registration.name} 소속 팀`}
+            value={teamId}
+            onChange={(event) => setTeamId(event.target.value)}
+            className={inputClass}
+          >
+            {teams.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className={`${inputClass} flex items-center bg-[#f1f2ed]`}>
+            {currentTeam.name}
+          </span>
+        )}
         <select
           aria-label={`${registration.name} 권한`}
           value={role}
-          onChange={(event) =>
-            setRole(event.target.value as Exclude<Role, 'admin'>)
-          }
+          onChange={(event) => setRole(event.target.value as Role)}
           className={inputClass}
         >
+          {isMaster && <option value="admin">관리자(팀장)</option>}
           <option value="member">팀원</option>
           <option value="commenter">조회·댓글</option>
         </select>
@@ -7119,6 +7274,7 @@ function MemberForm({
   close: () => void;
   save: (member: Member) => void;
 }) {
+  const teamName = useCurrentTeam()?.name ?? '';
   function submit(event: FormSubmitEvent) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -7150,7 +7306,7 @@ function MemberForm({
             <input
               name="team"
               required
-              defaultValue="파크사업팀"
+              defaultValue={teamName}
               className={inputClass}
             />
           </Field>

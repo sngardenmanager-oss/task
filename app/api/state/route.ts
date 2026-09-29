@@ -2,9 +2,16 @@ import {
   ApiError,
   apiErrorResponse,
   authenticateRequest,
-  requireWorkspaceMember,
+  requestedTeam,
+  requireTeamAccess,
 } from '@/lib/auth-server';
-import { readWorkspaceState, writeWorkspaceState } from '@/lib/workspace-store';
+import { keepRetiredMembers, planMembershipSync } from '@/lib/team-access';
+import {
+  deactivateMembership,
+  listMemberships,
+  upsertMembership,
+} from '@/lib/team-store';
+import { writeWorkspaceState } from '@/lib/workspace-store';
 import type { Member, Task, TaskLink, WorkspaceState } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -127,15 +134,25 @@ function validateUpdate(
   }
 }
 
+/** 팀 작업공간의 members 변경(퇴사 처리·역할 변경)을 소속 기준표에 반영합니다. */
+async function syncMemberships(teamId: string, members: Member[]) {
+  const memberships = await listMemberships({ teamId });
+  for (const change of planMembershipSync(teamId, members, memberships)) {
+    if (change.kind === 'deactivate')
+      await deactivateMembership(teamId, change.email);
+    else await upsertMembership(change.membership);
+  }
+}
+
 export async function GET(request: Request) {
   try {
-    const [user, state] = await Promise.all([
-      authenticateRequest(request),
-      readWorkspaceState(),
-    ]);
-    const actor = requireWorkspaceMember(state, user.email!);
+    const user = await authenticateRequest(request);
+    const { state, actor, team, teams, isMaster } = await requireTeamAccess(
+      user.email!,
+      requestedTeam(request),
+    );
     return Response.json(
-      { state, actor, pendingRegistrations: [] },
+      { state, actor, team, teams, isMaster, pendingRegistrations: [] },
       { headers: { 'cache-control': 'private, no-store, max-age=0' } },
     );
   } catch (error) {
@@ -145,13 +162,12 @@ export async function GET(request: Request) {
 
 export async function PUT(request: Request) {
   try {
-    const [user, incoming, before] = await Promise.all([
+    const [user, incoming] = await Promise.all([
       authenticateRequest(request),
       request.json() as Promise<{
         state?: WorkspaceState;
         deletedIds?: string[];
       }>,
-      readWorkspaceState(),
     ]);
     if (!incoming.state) {
       return Response.json(
@@ -160,7 +176,11 @@ export async function PUT(request: Request) {
       );
     }
 
-    const actor = requireWorkspaceMember(before, user.email!);
+    const {
+      state: before,
+      actor,
+      team,
+    } = await requireTeamAccess(user.email!, requestedTeam(request));
     const deletedIds = new Set(
       (incoming.deletedIds ?? []).filter(
         (id): id is string => typeof id === 'string' && id.length > 0,
@@ -170,6 +190,7 @@ export async function PUT(request: Request) {
       throw new ApiError('삭제는 관리자만 할 수 있습니다.', 403);
     }
     const mergedState = mergeIncomingState(before, incoming.state, deletedIds);
+    mergedState.members = keepRetiredMembers(before.members, mergedState.members);
     validateUpdate(before, mergedState, actor);
     const changedAt = new Date().toISOString();
     mergedState.tasks = mergedState.tasks.map(task => {
@@ -177,7 +198,12 @@ export async function PUT(request: Request) {
       if (!previous || previous.status === task.status) return task;
       return { ...task, completedAt: task.status === "completed" ? changedAt : undefined, statusHistory: [...(previous.statusHistory ?? []), { at: changedAt, actorId: actor.id, from: previous.status, to: task.status }] };
     });
-    const persisted = await writeWorkspaceState(mergedState);
+    const persisted = await writeWorkspaceState(team.id, mergedState);
+    if (
+      persisted &&
+      JSON.stringify(before.members) !== JSON.stringify(mergedState.members)
+    )
+      await syncMemberships(team.id, mergedState.members);
     return Response.json(
       { ok: true, localOnly: !persisted, actor, state: mergedState },
       { headers: { 'cache-control': 'private, no-store, max-age=0' } },

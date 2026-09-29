@@ -2,10 +2,11 @@ import {
   ApiError,
   apiErrorResponse,
   authenticateRequest,
-  requireWorkspaceMember,
+  requestedTeam,
+  requireTeamAccess,
 } from '@/lib/auth-server';
 import { getSupabaseAdmin, isSupabaseConfigured } from '@/lib/supabase-server';
-import { readWorkspaceState } from '@/lib/workspace-store';
+import { LEGACY_TEAM_ID, reportOwnerFor } from '@/lib/team-access';
 import { reportValidation, validateStatistic } from '@/lib/reports';
 import {
   migrateOwnerStores,
@@ -21,8 +22,10 @@ export const dynamic = 'force-dynamic';
 const headers = { 'cache-control': 'private, no-store, max-age=0' };
 async function context(request: Request) {
   const user = await authenticateRequest(request);
-  const workspace = await readWorkspaceState();
-  const actor = requireWorkspaceMember(workspace, user.email!);
+  const { actor, team } = await requireTeamAccess(
+    user.email!,
+    requestedTeam(request),
+  );
   // Revenue and executive reports are available to report authors and admins.
   if (actor.role === 'commenter')
     throw new ApiError(
@@ -31,7 +34,7 @@ async function context(request: Request) {
     );
   if (!isSupabaseConfigured())
     throw new ApiError('보고서 서버 저장소가 설정되지 않았습니다.', 503);
-  return actor;
+  return { actor, teamId: team.id };
 }
 function storeError(message: string): never {
   console.error('Reports storage:', message);
@@ -42,38 +45,47 @@ function storeError(message: string): never {
 }
 type StoredRow = { owner_id: string; version: number; payload: ReportStore; updated_at?: string };
 
-/** 팀 공용 보고서 저장소를 읽습니다. 처음 한 번은 예전 작성자별 저장소를 합쳐 만듭니다(예전 행은 그대로 둔다). */
-async function readTeamStore(): Promise<{ version: number; store: ReportStore }> {
+/** 팀 공용 보고서 저장소를 읽습니다. 팀마다 한 행입니다(파크사업팀은 기존 TEAM_REPORT_OWNER 행).
+ * 파크사업팀은 처음 한 번 예전 작성자별 저장소를 합쳐 만듭니다(예전 행은 그대로 둔다). 새 팀은 빈 저장소로 시작합니다. */
+async function readTeamStore(
+  teamId: string,
+): Promise<{ version: number; store: ReportStore }> {
   const db = getSupabaseAdmin();
+  const owner = reportOwnerFor(teamId);
   const { data, error } = await db
     .from('weekly_report_state')
     .select('owner_id,version,payload')
-    .eq('owner_id', TEAM_REPORT_OWNER)
+    .eq('owner_id', owner)
     .maybeSingle<StoredRow>();
   if (error) storeError(error.message);
   if (data) return { version: data.version, store: data.payload };
-  const { data: legacy, error: legacyError } = await db
-    .from('weekly_report_state')
-    .select('owner_id,version,payload,updated_at')
-    .neq('owner_id', TEAM_REPORT_OWNER);
-  if (legacyError) storeError(legacyError.message);
-  const store = migrateOwnerStores((legacy ?? []) as StoredRow[]);
+  let legacy: StoredRow[] = [];
+  if (teamId === LEGACY_TEAM_ID) {
+    const { data: legacyRows, error: legacyError } = await db
+      .from('weekly_report_state')
+      .select('owner_id,version,payload,updated_at')
+      .neq('owner_id', TEAM_REPORT_OWNER)
+      .not('owner_id', 'like', 'team:%');
+    if (legacyError) storeError(legacyError.message);
+    legacy = (legacyRows ?? []) as StoredRow[];
+  }
+  const store = migrateOwnerStores(legacy);
   const { error: insertError } = await db.from('weekly_report_state').insert({
-    owner_id: TEAM_REPORT_OWNER,
+    owner_id: owner,
     version: 1,
     payload: store,
     updated_at: new Date().toISOString(),
   });
   // 동시에 다른 요청이 먼저 만들었으면 그 값을 다시 읽는다.
-  if (insertError?.code === '23505') return readTeamStore();
+  if (insertError?.code === '23505') return readTeamStore(teamId);
   if (insertError) storeError(insertError.message);
   return { version: 1, store };
 }
 
 export async function GET(request: Request) {
   try {
-    await context(request);
-    const { version, store } = await readTeamStore();
+    const { teamId } = await context(request);
+    const { version, store } = await readTeamStore(teamId);
     return Response.json({ store, version }, { headers });
   } catch (error) {
     return apiErrorResponse(error, '보고서를 불러오지 못했습니다.');
@@ -109,7 +121,7 @@ function validateStore(store: ReportStore) {
  * 그 사이 다른 사람이 저장해 버전이 바뀌었으면 다시 읽어 병합을 반복한다. */
 export async function PUT(request: Request) {
   try {
-    const actor = await context(request);
+    const { actor, teamId } = await context(request);
     const body = await request.text();
     if (body.length > 12_000_000)
       throw new ApiError('보고서 저장량이 요청 한도를 넘었습니다.', 413);
@@ -130,7 +142,7 @@ export async function PUT(request: Request) {
       throw new ApiError('보고서 데이터 형식이 올바르지 않습니다.', 400);
     const db = getSupabaseAdmin();
     for (let attempt = 0; attempt < 4; attempt += 1) {
-      const before = await readTeamStore();
+      const before = await readTeamStore(teamId);
       let store: ReportStore;
       try {
         store = mergeSharedStore(before.store, incoming, input.bases ?? {}, actor);
@@ -148,7 +160,7 @@ export async function PUT(request: Request) {
           payload: store,
           updated_at: new Date().toISOString(),
         })
-        .eq('owner_id', TEAM_REPORT_OWNER)
+        .eq('owner_id', reportOwnerFor(teamId))
         .eq('version', before.version)
         .select('version')
         .maybeSingle();

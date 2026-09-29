@@ -1,5 +1,8 @@
 import { createClient, type User } from '@supabase/supabase-js';
-import type { Member, WorkspaceState } from '@/lib/types';
+import { resolveTeamAccess, TeamAccessError } from '@/lib/team-access';
+import { listMemberships, listTeams } from '@/lib/team-store';
+import { readWorkspaceState } from '@/lib/workspace-store';
+import type { Member, Team, WorkspaceState } from '@/lib/types';
 
 export class ApiError extends Error {
   constructor(
@@ -43,7 +46,7 @@ export async function authenticateRequest(request: Request): Promise<User> {
   return data.user;
 }
 
-function isMasterEmail(email: string) {
+export function isMasterEmail(email: string) {
   const normalizedEmail = email.trim().toLowerCase();
   return (process.env.MASTER_EMAILS ?? '')
     .split(',')
@@ -86,6 +89,61 @@ export function requireWorkspaceMember(
     );
   }
   return member;
+}
+
+export type TeamContext = {
+  team: Team;
+  /** 이 사람이 들어갈 수 있는 팀. 마스터는 모든 활성 팀, 그 밖에는 자기 팀 하나입니다. */
+  teams: Team[];
+  state: WorkspaceState;
+  actor: Member;
+  isMaster: boolean;
+};
+
+/** 요청한 팀(없으면 기본 팀)에 들어갈 수 있는지 확인하고, 그 팀 작업공간과 팀 안에서의 역할을 돌려줍니다.
+ * 팀 검사는 모든 API가 이 함수 한 곳에서 합니다. */
+export async function requireTeamAccess(
+  email: string,
+  requestedTeamId?: string | null,
+): Promise<TeamContext> {
+  const isMaster = isMasterEmail(email);
+  const [teams, memberships] = await Promise.all([
+    listTeams(),
+    isMaster ? Promise.resolve([]) : listMemberships({ email }),
+  ]);
+  let resolved: ReturnType<typeof resolveTeamAccess>;
+  try {
+    resolved = resolveTeamAccess({
+      email,
+      isMaster,
+      requestedTeamId,
+      teams,
+      memberships,
+    });
+  } catch (error) {
+    if (error instanceof TeamAccessError)
+      throw new ApiError(error.message, error.status, error.code);
+    throw error;
+  }
+  const state = await readWorkspaceState(resolved.team.id);
+  const actor = requireWorkspaceMember(state, email);
+  return {
+    team: resolved.team,
+    teams: resolved.accessibleTeams,
+    state,
+    actor,
+    isMaster,
+  };
+}
+
+/** 요청 URL의 ?team= 값을 읽습니다. */
+export function requestedTeam(request: Request) {
+  return new URL(request.url).searchParams.get('team');
+}
+
+export function requireMaster(email: string) {
+  if (!isMasterEmail(email))
+    throw new ApiError('마스터만 할 수 있는 작업입니다.', 403);
 }
 
 export function apiErrorResponse(error: unknown, fallback: string) {

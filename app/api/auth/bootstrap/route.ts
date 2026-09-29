@@ -1,4 +1,6 @@
 import { getSupabaseAdmin, isSupabaseConfigured } from '@/lib/supabase-server';
+import { LEGACY_TEAM_ID } from '@/lib/team-access';
+import { deleteMembership, upsertMembership } from '@/lib/team-store';
 import { readWorkspaceState, writeWorkspaceState } from '@/lib/workspace-store';
 
 export const dynamic = 'force-dynamic';
@@ -71,8 +73,16 @@ export async function POST(request: Request) {
   admin.email = email;
   if (name) admin.name = name;
   try {
-    const persisted = await writeWorkspaceState(state);
+    const persisted = await writeWorkspaceState(LEGACY_TEAM_ID, state);
     if (!persisted) throw new Error('Supabase persistence is unavailable.');
+    await upsertMembership({
+      teamId: LEGACY_TEAM_ID,
+      email,
+      memberId: admin.id,
+      role: 'admin',
+      active: true,
+    });
+    await deleteMembership(LEGACY_TEAM_ID, 'admin@local.test').catch(() => undefined);
   } catch {
     admin.email = 'admin@local.test';
     admin.name = previousName;

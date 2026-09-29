@@ -2,30 +2,30 @@ import {
   ApiError,
   apiErrorResponse,
   authenticateRequest,
-  requireWorkspaceMember,
+  requestedTeam,
+  requireTeamAccess,
 } from '@/lib/auth-server';
 import { listPendingRegistrations } from '@/lib/registration-requests';
 import { getSupabaseAdmin } from '@/lib/supabase-server';
-import { readWorkspaceState, writeWorkspaceState } from '@/lib/workspace-store';
-import type { Member, Role } from '@/lib/types';
+import { approvalProblem } from '@/lib/team-access';
+import { placeMemberInTeam } from '@/lib/team-members';
+import type { Role } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
-async function requireAdmin(request: Request) {
-  const [user, state] = await Promise.all([
-    authenticateRequest(request),
-    readWorkspaceState(),
-  ]);
-  const actor = requireWorkspaceMember(state, user.email!);
-  if (actor.role !== 'admin')
+/** 가입 승인은 마스터와 팀 관리자만 합니다. 팀 관리자는 자기 팀으로만 승인합니다. */
+async function requireApprover(request: Request) {
+  const user = await authenticateRequest(request);
+  const context = await requireTeamAccess(user.email!, requestedTeam(request));
+  if (!context.isMaster && context.actor.role !== 'admin')
     throw new ApiError('가입 승인은 관리자만 처리할 수 있습니다.', 403);
-  return { state };
+  return context;
 }
 
 export async function GET(request: Request) {
   try {
-    const { state } = await requireAdmin(request);
-    const registrations = await listPendingRegistrations(state);
+    await requireApprover(request);
+    const registrations = await listPendingRegistrations();
     return Response.json(
       { registrations },
       { headers: { 'cache-control': 'private, no-store, max-age=0' } },
@@ -37,18 +37,26 @@ export async function GET(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    const { state } = await requireAdmin(request);
+    const context = await requireApprover(request);
     const body = (await request.json()) as {
       id?: string;
       role?: Role;
-      team?: string;
+      teamId?: string;
     };
     const id = body.id?.trim();
-    const team = body.team?.trim();
+    const teamId = body.teamId?.trim() || context.team.id;
     const role = body.role;
-    if (!id || !team || (role !== 'member' && role !== 'commenter')) {
-      throw new ApiError('승인할 계정, 소속, 권한을 확인해 주세요.', 400);
+    if (!id || !role) {
+      throw new ApiError('승인할 계정, 팀, 권한을 확인해 주세요.', 400);
     }
+    const problem = approvalProblem({
+      isMaster: context.isMaster,
+      actorRole: context.actor.role,
+      actorTeamId: context.team.id,
+      targetTeamId: teamId,
+      role,
+    });
+    if (problem) throw new ApiError(problem, 403);
 
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase.auth.admin.getUserById(id);
@@ -57,23 +65,15 @@ export async function PATCH(request: Request) {
       throw new ApiError('가입 신청 계정을 찾지 못했습니다.', 404);
 
     const email = authUser.email.trim().toLowerCase();
-    if (state.members.some((member) => member.email.toLowerCase() === email)) {
-      throw new ApiError('이미 사용자 목록에 등록된 계정입니다.', 409);
-    }
+    const pending = await listPendingRegistrations();
+    if (!pending.some((item) => item.id === authUser.id))
+      throw new ApiError('이미 팀에 소속되었거나 승인할 수 없는 계정입니다.', 409);
 
     const displayName = authUser.user_metadata?.display_name;
     const name =
       typeof displayName === 'string' && displayName.trim()
         ? displayName.trim()
         : email.split('@')[0];
-    const member: Member = {
-      id: `member-${authUser.id}`,
-      name,
-      email,
-      role,
-      team,
-      active: true,
-    };
 
     if (!authUser.email_confirmed_at) {
       const { error: confirmError } = await supabase.auth.admin.updateUserById(
@@ -86,13 +86,26 @@ export async function PATCH(request: Request) {
         );
     }
 
-    state.members.push(member);
-    const persisted = await writeWorkspaceState(state);
-    if (!persisted) throw new Error('Supabase persistence is unavailable.');
+    let member;
+    try {
+      member = await placeMemberInTeam(teamId, {
+        memberId: `member-${authUser.id}`,
+        name,
+        email,
+        role,
+      });
+    } catch (placeError) {
+      if (
+        placeError instanceof Error &&
+        !placeError.message.startsWith('Supabase')
+      )
+        throw new ApiError(placeError.message, 409);
+      throw placeError;
+    }
 
-    const registrations = await listPendingRegistrations(state);
+    const registrations = await listPendingRegistrations();
     return Response.json(
-      { member, registrations },
+      { member, teamId, registrations },
       { headers: { 'cache-control': 'private, no-store, max-age=0' } },
     );
   } catch (error) {

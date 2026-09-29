@@ -595,6 +595,8 @@ const harness = {
   },
   requireWorkspaceMember: () => apiActor,
   readWorkspaceState: async () => data,
+  requestedTeam: () => null,
+  requireTeamAccess: async () => ({ actor: apiActor, team: { id: 'park' } }),
   isSupabaseConfigured: () => true,
   getSupabaseAdmin: () => ({
     from: () => {
@@ -603,7 +605,8 @@ const harness = {
       const query = {
         select: () => query,
         // 예전 작성자별 행 조회(팀 저장소 최초 생성 때만 사용): 테스트에는 없음
-        neq: async () => ({ data: [], error: null }),
+        neq: () => query,
+        not: async () => ({ data: [], error: null }),
         eq: (k, v) => {
           filters[k] = v;
           return query;
@@ -651,6 +654,27 @@ routeSource = routeSource.replace(
 routeSource = routeSource.replace(
   "from '@/lib/reports'",
   'from ' + JSON.stringify(coreUrl),
+);
+routeSource = routeSource.replace(
+  "from '@/lib/team-access'",
+  'from ' +
+    JSON.stringify(
+      'data:text/javascript;base64,' +
+        Buffer.from(
+          ts.transpileModule(
+            await fs.readFile(
+              new URL('../../lib/team-access.ts', import.meta.url),
+              'utf8',
+            ),
+            {
+              compilerOptions: {
+                module: ts.ModuleKind.ESNext,
+                target: ts.ScriptTarget.ES2022,
+              },
+            },
+          ).outputText,
+        ).toString('base64'),
+    ),
 );
 routeSource = routeSource.replace(
   "from '@/lib/jeju-arrivals'",
