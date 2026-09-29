@@ -159,8 +159,9 @@ export async function GET(request: Request) {
         team,
         teams,
         isMaster,
+        // 로그인 확인 칸은 마스터에게만 보이므로 마스터 설정 개수도 마스터에게만 보냅니다.
         signedInEmail: user.email!.toLowerCase(),
-        masterConfigured: masterEmailCount(),
+        masterConfigured: isMaster ? masterEmailCount() : 0,
         pendingRegistrations: [],
       },
       { headers: { 'cache-control': 'private, no-store, max-age=0' } },

@@ -4938,13 +4938,15 @@ function SettingsView({
 }) {
   return (
     <div className="space-y-5">
-      <SignInCheck
-        email={signIn.email}
-        teamName={team.name}
-        role={roleLabel(actor)}
-        isMaster={isMaster}
-        masterConfigured={signIn.masterConfigured}
-      />
+      {isMaster && (
+        <SignInCheck
+          email={signIn.email}
+          teamName={team.name}
+          role={roleLabel(actor)}
+          isMaster={isMaster}
+          masterConfigured={signIn.masterConfigured}
+        />
+      )}
       {isMaster && (
         <TeamManagementPanel
           accessToken={accessToken}
