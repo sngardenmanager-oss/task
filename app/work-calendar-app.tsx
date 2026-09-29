@@ -58,6 +58,7 @@ import {
   withTeam,
 } from '@/app/team-context';
 import TeamManagementPanel from '@/app/team-management';
+import { afterUserActivation } from '@/app/stay-in-app';
 import TeamSwitcher from '@/app/team-switcher';
 import { LEGACY_TEAM_ID } from '@/lib/team-access';
 import BackupReminder from '@/app/backup-reminder';
@@ -910,6 +911,7 @@ export default function WorkCalendarApp({
       | AppHistoryEntry
       | undefined;
 
+    let cancelActivationWait = () => {};
     if (existingEntry?.kind !== 'screen') {
       if (!existingEntry) {
         window.history.replaceState(
@@ -921,11 +923,14 @@ export default function WorkCalendarApp({
           window.location.href,
         );
       }
-      window.history.pushState(
-        { ...window.history.state, [appHistoryKey]: currentEntry() },
-        '',
-        window.location.href,
-      );
+      cancelActivationWait = afterUserActivation(() => {
+        if (window.history.state?.[appHistoryKey]?.kind !== 'guard') return;
+        window.history.pushState(
+          { ...window.history.state, [appHistoryKey]: currentEntry() },
+          '',
+          window.location.href,
+        );
+      });
     } else {
       window.history.replaceState(
         { ...window.history.state, [appHistoryKey]: currentEntry() },
@@ -961,7 +966,10 @@ export default function WorkCalendarApp({
     };
 
     window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      cancelActivationWait();
+    };
   }, []);
 
   useEffect(() => {
@@ -1911,11 +1919,44 @@ export default function WorkCalendarApp({
     setToast(`${result.member.name}님을 ${teamName}에 승인했습니다.`);
   }
 
+  /** 가입 대기 계정이나 퇴사·내보낸 사람의 로그인 계정을 완전히 삭제합니다.
+   * 삭제하면 같은 이메일로 다시 가입할 수 있고, 과거 업무 기록은 그대로 남습니다. */
+  async function deleteAccount(target: { id?: string; email?: string; name: string }) {
+    if (
+      !window.confirm(
+        `${target.name}님의 로그인 계정을 삭제할까요?\n과거 업무 기록은 남고, 같은 이메일로 다시 가입할 수 있습니다. 되돌릴 수 없습니다.`,
+      )
+    )
+      return;
+    try {
+      const query = target.id
+        ? `id=${encodeURIComponent(target.id)}`
+        : `email=${encodeURIComponent(target.email ?? '')}`;
+      const response = await fetch(
+        `${withTeam('/api/auth/registrations', team.id)}&${query}`,
+        { method: 'DELETE', headers: { authorization: `Bearer ${accessToken}` } },
+      );
+      const result = (await response.json()) as {
+        registrations?: RegistrationRequest[];
+        error?: string;
+      };
+      if (response.status === 401) {
+        await onSignOut();
+        return;
+      }
+      if (!response.ok) throw new Error(result.error ?? '계정을 삭제하지 못했습니다.');
+      setPendingRegistrations(result.registrations ?? []);
+      setToast(`${target.name}님의 계정을 삭제했습니다.`);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : '계정을 삭제하지 못했습니다.');
+    }
+  }
+
   /** 팀 관리자·마스터가 팀원을 팀에서 내보냅니다. 서버가 돌려준 팀 데이터로 화면을 맞춥니다. */
   async function removeFromTeam(member: Member) {
     if (
       !window.confirm(
-        `${member.name}님을 ${team.name}에서 내보낼까요?\n과거 기록은 남고, 미완료 업무는 관리자에게 넘어갑니다. 다시 들어오려면 가입 승인을 받아야 합니다.`,
+        `${member.name}님을 ${team.name}에서 내보낼까요?\n과거 기록은 남고, 미완료 업무는 관리자에게 넘어갑니다. 가입 대기 목록으로 돌아가며, 그곳에서 다시 승인하거나 계정을 삭제할 수 있습니다.`,
       )
     )
       return;
@@ -2155,13 +2196,13 @@ export default function WorkCalendarApp({
           teamSwitcher={teamSwitcher}
         />
         {mobileMenu && (
-          <div className="fixed inset-0 z-30 md:hidden">
+          <div className="fixed inset-0 z-[35] md:hidden">
             <button
               aria-label="메뉴 닫기"
               className="absolute inset-0 bg-black/20"
               onClick={() => setMobileMenu(false)}
             />
-            <aside className="relative h-full w-64 bg-[#fbfaf5] p-4 pt-20">
+            <aside className="relative h-full w-64 overflow-y-auto overscroll-contain bg-[#fbfaf5] p-4 pb-28 pt-20">
               <SidebarContent
                 view={view}
                 navigate={navigate}
@@ -2349,6 +2390,7 @@ export default function WorkCalendarApp({
               refreshPendingRegistrations={refreshPendingRegistrations}
               approveRegistration={approveRegistration}
               removeFromTeam={removeFromTeam}
+              deleteAccount={deleteAccount}
               updateData={updateData}
               deleteTemplate={deleteProjectTemplate}
               team={team}
@@ -4879,6 +4921,7 @@ function LegacySettingsView({
   refreshPendingRegistrations,
   approveRegistration,
   removeFromTeam,
+  deleteAccount,
   updateData,
   team,
   teams,
@@ -4892,6 +4935,7 @@ function LegacySettingsView({
   refreshPendingRegistrations: () => Promise<void>;
   approveRegistration: (id: string, role: Role, teamId: string) => Promise<void>;
   removeFromTeam: (member: Member) => Promise<void>;
+  deleteAccount: (target: { id?: string; email?: string; name: string }) => Promise<void>;
   updateData: (
     fn: (data: WorkspaceState) => WorkspaceState,
     message?: string,
@@ -4985,6 +5029,9 @@ function LegacySettingsView({
                   key={registration.id}
                   registration={registration}
                   approveRegistration={approveRegistration}
+                  deleteAccount={() =>
+                    deleteAccount({ id: registration.id, name: registration.name })
+                  }
                   team={team}
                   teams={teams}
                   isMaster={isMaster}
@@ -5016,12 +5063,12 @@ function LegacySettingsView({
             {data.members.map((member) => (
               <div
                 key={member.id}
-                className={`flex items-center gap-3 rounded-xl border border-[#e0e3de] bg-white p-3 ${!member.active ? 'opacity-50' : ''}`}
+                className={`flex flex-wrap items-center gap-3 rounded-xl border border-[#e0e3de] bg-white p-3 ${!member.active ? 'opacity-50' : ''}`}
               >
                 <span className="grid size-9 place-items-center rounded-full bg-[#e3eee7] text-sm font-black text-[#2f6b4f]">
                   {member.name.slice(0, 1)}
                 </span>
-                <span className="min-w-0 flex-1">
+                <span className="min-w-0 flex-1 basis-40">
                   <strong className="block truncate text-sm">
                     {member.name}
                   </strong>
@@ -5056,6 +5103,19 @@ function LegacySettingsView({
                 )}
                 {!member.active && (
                   <span className="text-xs font-bold">비활성</span>
+                )}
+                {!member.active && isAdmin && member.email.includes('@') && (
+                  <Button
+                    aria-label={`${member.name} 계정 삭제`}
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      void deleteAccount({ email: member.email, name: member.name })
+                    }
+                  >
+                    <Trash2 />
+                    계정 삭제
+                  </Button>
                 )}
               </div>
             ))}
@@ -5166,6 +5226,7 @@ function SettingsView({
   refreshPendingRegistrations,
   approveRegistration,
   removeFromTeam,
+  deleteAccount,
   updateData,
   deleteTemplate,
   team,
@@ -5183,6 +5244,7 @@ function SettingsView({
   refreshPendingRegistrations: () => Promise<void>;
   approveRegistration: (id: string, role: Role, teamId: string) => Promise<void>;
   removeFromTeam: (member: Member) => Promise<void>;
+  deleteAccount: (target: { id?: string; email?: string; name: string }) => Promise<void>;
   updateData: (
     fn: (data: WorkspaceState) => WorkspaceState,
     message?: string,
@@ -5234,6 +5296,7 @@ function SettingsView({
         refreshPendingRegistrations={refreshPendingRegistrations}
         approveRegistration={approveRegistration}
         removeFromTeam={removeFromTeam}
+        deleteAccount={deleteAccount}
         updateData={updateData}
         team={team}
         teams={teams}
@@ -5898,12 +5961,14 @@ function DataTransferPanel({
 function PendingRegistrationCard({
   registration,
   approveRegistration,
+  deleteAccount,
   team: currentTeam,
   teams,
   isMaster,
 }: {
   registration: RegistrationRequest;
   approveRegistration: (id: string, role: Role, teamId: string) => Promise<void>;
+  deleteAccount: () => Promise<void>;
   team: Team;
   teams: Team[];
   isMaster: boolean;
@@ -5987,6 +6052,17 @@ function PendingRegistrationCard({
         <Button type="submit" disabled={busy}>
           {busy ? <LoaderCircle className="animate-spin" /> : <Check />}승인
         </Button>
+      </div>
+      <div className="mt-2 flex justify-end">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void deleteAccount()}
+          className="inline-flex items-center gap-1 text-xs font-bold text-[#a83f36] hover:underline"
+        >
+          <Trash2 className="size-3.5" />
+          승인하지 않고 계정 삭제
+        </button>
       </div>
       {error && (
         <p

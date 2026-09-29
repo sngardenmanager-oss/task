@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button';
 import BackupReminder from '@/app/backup-reminder';
 import CombinedReportView from '@/app/combined-report-view';
 import CompanyEventsPanel from '@/app/company-events-panel';
+import { useStayInApp } from '@/app/stay-in-app';
 import TeamSwitcher from '@/app/team-switcher';
 import { COMPANY_COLOR, companyEventAsTask } from '@/lib/company-events';
 import { ALL_TEAMS_ID } from '@/lib/team-access';
@@ -95,6 +96,11 @@ export default function MasterOverview({
   const [tab, setTab] = useState<Tab>('today');
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<OverviewTask | null>(null);
+  // 휴대폰 뒤로 가기: 열린 창을 닫고, 다른 탭이면 '오늘'로 돌아오며 앱 밖으로 나가지 않습니다.
+  useStayInApp(() => {
+    if (selected) setSelected(null);
+    else setTab('today');
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
