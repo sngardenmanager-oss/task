@@ -76,12 +76,12 @@ export async function POST(request: Request) {
         throw new ApiError('팀에서 내보내기는 관리자만 할 수 있습니다.', 403);
       if (email === normalizeEmail(user.email!))
         throw new ApiError('자기 자신은 내보낼 수 없습니다.', 400);
-      if (isMasterEmail(email)) throw new ApiError('마스터는 내보낼 수 없습니다.', 400);
+      if (isMasterEmail(email)) throw new ApiError('이 사용자는 내보낼 수 없습니다.', 400);
       const target = context.state.members.find(
         (item) => normalizeEmail(item.email) === email,
       );
       if (!context.isMaster && target?.role === 'admin')
-        throw new ApiError('관리자는 마스터만 내보낼 수 있습니다.', 403);
+        throw new ApiError('관리자는 내보낼 수 없습니다.', 403);
       const state = await removeMemberFromTeam(body.teamId, email);
       return Response.json(
         context.isMaster ? { state, ...(await directory()) } : { state },

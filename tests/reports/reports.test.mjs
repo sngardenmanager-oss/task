@@ -596,6 +596,7 @@ const harness = {
   requireWorkspaceMember: () => apiActor,
   readWorkspaceState: async () => data,
   requestedTeam: () => null,
+  recordMasterAlert: async () => {},
   requireTeamAccess: async () => ({ actor: apiActor, team: { id: 'park' } }),
   isSupabaseConfigured: () => true,
   getSupabaseAdmin: () => ({
@@ -645,6 +646,10 @@ routeSource = routeSource.replace(
 );
 routeSource = routeSource.replace(
   /import \{([\s\S]*?)\} from '@\/lib\/supabase-server';/,
+  (_, names) => 'const {' + names + '} = globalThis.__reportApiTests;',
+);
+routeSource = routeSource.replace(
+  /import \{([\s\S]*?)\} from '@\/lib\/master-alerts';/,
   (_, names) => 'const {' + names + '} = globalThis.__reportApiTests;',
 );
 routeSource = routeSource.replace(

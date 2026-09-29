@@ -133,17 +133,19 @@ type AppHistoryEntry = {
 
 const appHistoryKey = '__snoopyWorkCalendar';
 
-/** 이 이메일만 오늘 화면에서 모든 담당자의 업무를 파악할 수 있습니다. 그 외 사용자는 자신이 담당자이거나
- * 협업자로 지정된 업무만 오늘/지연/D-day 목록에서 보게 됩니다. */
-const FULL_ACCESS_EMAIL = 'sn.gardenmanager@gmail.com';
 
 /** 오늘 탭과 관광뉴스 탭에 보여줄 최근 뉴스 기간(일). 서버에는 보고서용으로 14일치가 저장됩니다. */
 const NEWS_RECENT_DAYS = 10;
 
-function isTaskVisibleTo(task: Task, member: Pick<Member, 'id' | 'email'>) {
+/** 마스터(seeAll)는 오늘 화면에서 모든 담당자의 업무를 파악할 수 있습니다. 그 외 사용자는 자신이 담당자이거나
+ * 협업자로 지정된 업무만 오늘/지연/D-day 목록에서 보게 됩니다. */
+function isTaskVisibleTo(
+  task: Task,
+  member: Pick<Member, 'id' | 'email'>,
+  seeAll: boolean,
+) {
   return (
-    member.email === FULL_ACCESS_EMAIL ||
-    member.id === 'system-master' ||
+    seeAll ||
     task.assigneeId === member.id ||
     task.collaborators.includes(member.id)
   );
@@ -1118,7 +1120,7 @@ export default function WorkCalendarApp({
       if (task.status === 'completion_requested') {
         nextCompletionRequests.push(task);
       }
-      if (!isTaskVisibleTo(task, actor)) continue;
+      if (!isTaskVisibleTo(task, actor, isMaster)) continue;
       if (task.status !== 'completed') {
         if (endDate < today) {
           nextOverdue.push(task);
@@ -1147,7 +1149,7 @@ export default function WorkCalendarApp({
       todayTasks: nextTodayTasks,
       ddayTasks: nextDdayTasks,
     };
-  }, [data.tasks, today, actor]);
+  }, [data.tasks, today, actor, isMaster]);
 
   const taskFocusLabel =
     taskFocus === 'today'
@@ -2264,6 +2266,7 @@ export default function WorkCalendarApp({
               data={data}
               news={newsItems}
               actor={actor}
+              seeAll={isMaster}
               todayTasks={todayTasks}
               requests={completionRequests}
               overdue={overdue}
@@ -2674,7 +2677,7 @@ function CompanyEventModal({
   return (
     <ModalShell
       title={event.title}
-      description="전사 공통 일정 · 마스터가 등록한 일정입니다."
+      description="전사 공통 일정입니다."
       close={close}
     >
       <dl className="grid grid-cols-[70px_1fr] gap-y-2 text-sm">
@@ -2832,6 +2835,7 @@ function TodayView({
   data,
   news,
   actor,
+  seeAll,
   todayTasks,
   requests,
   overdue,
@@ -2847,6 +2851,8 @@ function TodayView({
   data: WorkspaceState;
   news: NewsItem[];
   actor: Member;
+  /** 마스터는 모든 담당자의 업무를 봅니다. */
+  seeAll: boolean;
   todayTasks: Task[];
   requests: Task[];
   overdue: Task[];
@@ -2864,7 +2870,9 @@ function TodayView({
   const previousNotes = data.notes.filter(
     (item) => item.date === previousDate && !item.completed,
   );
-  const widgetTasks = data.tasks.filter((task) => isTaskVisibleTo(task, actor));
+  const widgetTasks = data.tasks.filter((task) =>
+    isTaskVisibleTo(task, actor, seeAll),
+  );
   const sortedDdayTasks = [...ddayTasks].sort(
     (a, b) =>
       Number(a.status === 'completed') - Number(b.status === 'completed') ||
@@ -4959,7 +4967,7 @@ function LegacySettingsView({
               <p className="mt-1 text-xs text-[#748078]">
                 {isMaster
                   ? '팀과 권한을 골라 승인해 주세요. 새 팀의 첫 관리자는 여기서 지정합니다.'
-                  : `승인하면 ${team.name}에 소속됩니다. 관리자 지정은 마스터에게 요청해 주세요.`}
+                  : `승인하면 ${team.name}에 소속됩니다.`}
               </p>
             </div>
             <Button
@@ -5393,8 +5401,7 @@ function AdminMasterEditPanel({
       <div className="mb-4">
         <h3 className="font-black">관리자 전체 수정</h3>
         <p className="mt-1 text-xs text-[#748078]">
-          사용자 이름·권한과 분류 이름·색상을 수정할 수 있습니다. 소속 팀은
-          마스터가 팀 관리에서 바꿉니다. 업무, 루틴,
+          사용자 이름·권한과 분류 이름·색상을 수정할 수 있습니다. 업무, 루틴,
           특이사항, 뉴스는 각 화면에서 수정합니다.
         </p>
       </div>

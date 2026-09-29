@@ -11,6 +11,7 @@ import {
   writeSetting,
 } from '@/lib/app-settings-store';
 import { listCompanyEvents } from '@/lib/company-events-store';
+import { dismissMasterAlert, listMasterAlerts } from '@/lib/master-alerts';
 import type { ReportStore } from '@/lib/report-types';
 import { isBackupDue, prunableReportIds, removeReports } from '@/lib/retention';
 import { getSupabaseAdmin, isSupabaseConfigured } from '@/lib/supabase-server';
@@ -55,11 +56,12 @@ export async function GET(request: Request) {
         { headers },
       );
     }
-    const [lastBackup, sizes, teams, companyEvents] = await Promise.all([
+    const [lastBackup, sizes, teams, companyEvents, alerts] = await Promise.all([
       readSetting<LastBackup>(LAST_BACKUP_KEY),
       readStorageSizes().catch(() => []),
       listTeams(),
       listCompanyEvents().catch(() => []),
+      listMasterAlerts().catch(() => []),
     ]);
     return Response.json(
       {
@@ -67,6 +69,7 @@ export async function GET(request: Request) {
         due: isBackupDue(new Date(), lastBackup?.at),
         teams: teams.filter((team) => team.active),
         companyEvents,
+        alerts,
         sizes: sizes.map((size) => ({
           ...size,
           teamId:
@@ -88,7 +91,17 @@ export async function POST(request: Request) {
   try {
     const user = await authenticateRequest(request);
     requireMaster(user.email!);
-    const body = (await request.json()) as { startedAt?: string; prune?: boolean };
+    const body = (await request.json()) as {
+      action?: 'dismissAlert';
+      id?: string;
+      startedAt?: string;
+      prune?: boolean;
+    };
+    if (body.action === 'dismissAlert') {
+      if (!body.id) throw new ApiError('알림을 확인해 주세요.', 400);
+      await dismissMasterAlert(body.id);
+      return Response.json({ alerts: await listMasterAlerts() }, { headers });
+    }
     const startedAt = body.startedAt ?? '';
     const started = Date.parse(startedAt);
     const now = new Date();

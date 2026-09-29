@@ -78,7 +78,8 @@ export function requireWorkspaceMember(
       ? { ...member, role: 'admin', active: true }
       : {
           id: 'system-master',
-          name: '마스터 관리자',
+          // 다른 팀에서 활동할 때 보이는 이름. 마스터라는 사실을 드러내지 않습니다.
+          name: '운영지원',
           email: email.toLowerCase(),
           role: 'admin',
           team: '전체',
@@ -154,7 +155,7 @@ export function requestedTeam(request: Request) {
 
 export function requireMaster(email: string) {
   if (!isMasterEmail(email))
-    throw new ApiError('마스터만 할 수 있는 작업입니다.', 403);
+    throw new ApiError('권한이 없습니다.', 403);
 }
 
 export function apiErrorResponse(error: unknown, fallback: string) {

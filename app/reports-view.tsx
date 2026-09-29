@@ -303,10 +303,21 @@ export default function ReportsView({
         },
       });
       // 서버가 한 번에 받을 수 있는 양을 넘으면 보내기 전에 알려 준다.
-      if (byteLength(payload) > REQUEST_LIMIT_BYTES)
+      const bytes = byteLength(payload);
+      if (bytes > REQUEST_LIMIT_BYTES) {
+        // 너무 커서 서버로 보낼 수 없으니, 막혔다는 사실만 조용히 알립니다.
+        void fetch(withTeam('/api/alerts', teamId), {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer ' + accessToken,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ bytes }),
+        }).catch(() => undefined);
         throw new Error(
-          '보고서 저장소가 가득 찼습니다. 마스터에게 전체 백업을 요청해 주세요(백업하면 1개월 지난 확정 보고서가 정리됩니다).',
+          '보고서 저장 공간이 부족해 지금은 저장하지 못했습니다. 작성한 내용은 화면에 그대로 있으니 잠시 후 다시 저장해 주세요.',
         );
+      }
       const response = await fetch(withTeam('/api/reports', teamId), {
         method: 'PUT',
         headers: {

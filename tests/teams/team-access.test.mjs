@@ -75,8 +75,14 @@ await test('가입 승인: 팀 관리자는 자기 팀·팀원 역할만, 첫 �
   const base = { isMaster: false, actorRole: 'admin', actorTeamId: 'team-a' };
   assert.equal(access.approvalProblem({ ...base, targetTeamId: 'team-a', role: 'member' }), null);
   assert.equal(access.approvalProblem({ ...base, targetTeamId: 'team-a', role: 'commenter' }), null);
-  assert.match(access.approvalProblem({ ...base, targetTeamId: 'park', role: 'member' }), /마스터/);
-  assert.match(access.approvalProblem({ ...base, targetTeamId: 'team-a', role: 'admin' }), /마스터/);
+  assert.match(access.approvalProblem({ ...base, targetTeamId: 'park', role: 'member' }), /이 팀으로만/);
+  assert.match(access.approvalProblem({ ...base, targetTeamId: 'team-a', role: 'admin' }), /권한이 없습니다/);
+  // 직원 화면에 나가는 문구에는 '마스터'가 없어야 합니다.
+  for (const text of [
+    access.approvalProblem({ ...base, targetTeamId: 'park', role: 'member' }),
+    access.approvalProblem({ ...base, targetTeamId: 'team-a', role: 'admin' }),
+  ])
+    assert.doesNotMatch(text, /마스터/);
   assert.match(
     access.approvalProblem({ ...base, actorRole: 'member', targetTeamId: 'team-a', role: 'member' }),
     /관리자/,

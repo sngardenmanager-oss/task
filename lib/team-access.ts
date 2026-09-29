@@ -103,8 +103,8 @@ export function approvalProblem({
   if (isMaster) return null;
   if (actorRole !== 'admin') return '가입 승인은 관리자만 처리할 수 있습니다.';
   if (targetTeamId !== actorTeamId)
-    return '다른 팀의 가입은 마스터만 승인할 수 있습니다.';
-  if (role === 'admin') return '관리자 지정은 마스터만 할 수 있습니다.';
+    return '이 팀으로만 승인할 수 있습니다.';
+  if (role === 'admin') return '관리자로 승인할 권한이 없습니다.';
   return null;
 }
 

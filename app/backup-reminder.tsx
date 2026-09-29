@@ -9,13 +9,14 @@ import {
   prunableReportIds,
   WARNING_BYTES,
 } from '@/lib/retention';
-import type { CompanyEvent, Team, WorkspaceState } from '@/lib/types';
+import type { CompanyEvent, MasterAlert, Team, WorkspaceState } from '@/lib/types';
 
 type Status = {
   lastBackupAt: string | null;
   due: boolean;
   teams: Team[];
   companyEvents: CompanyEvent[];
+  alerts: MasterAlert[];
   sizes: { kind: 'workspace' | 'report'; teamId: string | null; bytes: number }[];
 };
 type TeamBackup = { team: Team; workspace: WorkspaceState; reportStore: ReportStore | null };
@@ -147,13 +148,48 @@ export default function BackupReminder({
 
   const teamName = (id: string | null) =>
     status?.teams.find((team) => team.id === id)?.name ?? knownTeams.find((team) => team.id === id)?.name ?? '팀';
+  async function dismissAlert(id: string) {
+    try {
+      const result = await call<{ alerts: MasterAlert[] }>('/api/backup', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'dismissAlert', id }),
+      });
+      setStatus((current) => (current ? { ...current, alerts: result.alerts } : current));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '알림을 정리하지 못했습니다.');
+    }
+  }
+
   const warnings = (status?.sizes ?? []).filter((size) => size.bytes >= WARNING_BYTES);
+  const alerts = status?.alerts ?? [];
   const showReminder = status?.due && !dismissed;
-  if (!status || (!showReminder && !warnings.length && !showManual && step.kind === 'idle' && !error))
+  if (
+    !status ||
+    (!showReminder && !warnings.length && !alerts.length && !showManual && step.kind === 'idle' && !error)
+  )
     return null;
 
   return (
     <div className={`space-y-3 ${className}`}>
+      {alerts.map((alert) => (
+        <div
+          key={alert.id}
+          role="alert"
+          className="flex flex-col gap-2 rounded-2xl border border-[#e7b9b2] bg-[#fbeeeb] p-4 text-sm text-[#8d342e] sm:flex-row sm:items-center"
+        >
+          <TriangleAlert className="size-4 shrink-0" />
+          <span className="flex-1">
+            <strong>마스터 알림 · {teamName(alert.teamId)} 주간보고서 저장이 막혔습니다</strong>{' '}
+            ({new Date(alert.at).toLocaleString('ko-KR')}
+            {alert.count > 1 ? `, 오늘 ${alert.count}번` : ''}
+            {alert.bytes ? `, ${mb(alert.bytes)}` : ''}). 직원 화면에는 &ldquo;저장 공간 부족&rdquo;으로만 안내됩니다.
+            전체 백업을 하면 확정 1개월 지난 보고서가 정리되어 다시 저장할 수 있습니다.
+          </span>
+          <Button variant="outline" className="bg-white" onClick={() => void dismissAlert(alert.id)}>
+            확인
+          </Button>
+        </div>
+      ))}
       {warnings.map((size) => (
         <div
           key={`${size.kind}:${size.teamId}`}

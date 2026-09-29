@@ -6,6 +6,7 @@ import {
   requireTeamAccess,
 } from '@/lib/auth-server';
 import { getSupabaseAdmin, isSupabaseConfigured } from '@/lib/supabase-server';
+import { recordMasterAlert } from '@/lib/master-alerts';
 import { pruneImportHistory, REQUEST_LIMIT_BYTES } from '@/lib/retention';
 import { LEGACY_TEAM_ID, reportOwnerFor } from '@/lib/team-access';
 import { reportValidation, validateStatistic } from '@/lib/reports';
@@ -125,11 +126,15 @@ export async function PUT(request: Request) {
     const { actor, teamId } = await context(request);
     const body = await request.text();
     // 서버가 한 번에 받을 수 있는 양(4.5MB)보다 조금 낮은 4MB를 바이트 기준으로 확인합니다.
-    if (Buffer.byteLength(body, 'utf8') > REQUEST_LIMIT_BYTES)
+    // 막히면 직원에게는 일반 안내만 하고, 마스터에게만 알림을 남깁니다.
+    const bytes = Buffer.byteLength(body, 'utf8');
+    if (bytes > REQUEST_LIMIT_BYTES) {
+      await recordMasterAlert({ kind: 'report_full', teamId, bytes });
       throw new ApiError(
-        '보고서 저장소가 가득 찼습니다. 마스터에게 전체 백업을 요청해 주세요(백업하면 1개월 지난 확정 보고서가 정리됩니다).',
+        '보고서 저장 공간이 부족해 지금은 저장하지 못했습니다. 작성한 내용은 화면에 그대로 있으니 잠시 후 다시 저장해 주세요.',
         413,
       );
+    }
     const input = JSON.parse(body) as {
       version: number;
       store: ReportStore;

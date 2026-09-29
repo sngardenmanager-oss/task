@@ -57,6 +57,17 @@ export type OverviewTeam = {
   openNotes: number;
 };
 
+/** 마스터에게만 보이는 알림(예: 어느 팀에서 보고서 저장이 막힘). */
+export type MasterAlert = {
+  id: string;
+  kind: 'report_full';
+  teamId: string;
+  bytes?: number;
+  at: string;
+  count: number;
+  dismissedAt?: string;
+};
+
 /** 마스터 팀 관리 화면에 보이는 소속 한 줄입니다. */
 export type TeamDirectoryEntry = TeamMembership & { name: string };
 
