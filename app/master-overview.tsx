@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import BackupReminder from '@/app/backup-reminder';
 import CombinedReportView from '@/app/combined-report-view';
 import CompanyEventsPanel from '@/app/company-events-panel';
 import TeamSwitcher from '@/app/team-switcher';
@@ -239,6 +240,12 @@ export default function MasterOverview({
               {error}
             </p>
           )}
+          <BackupReminder
+            accessToken={accessToken}
+            teams={switchableTeams}
+            className="mb-5 print:hidden"
+            showManual={tab === 'today'}
+          />
           {!overview ? (
             <p className="flex items-center gap-2 text-sm text-[#748078]">
               <LoaderCircle className="size-4 animate-spin" /> 전체 팀 현황을 불러오는 중입니다.

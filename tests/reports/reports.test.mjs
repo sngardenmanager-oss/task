@@ -656,6 +656,27 @@ routeSource = routeSource.replace(
   'from ' + JSON.stringify(coreUrl),
 );
 routeSource = routeSource.replace(
+  "from '@/lib/retention'",
+  'from ' +
+    JSON.stringify(
+      'data:text/javascript;base64,' +
+        Buffer.from(
+          ts.transpileModule(
+            await fs.readFile(
+              new URL('../../lib/retention.ts', import.meta.url),
+              'utf8',
+            ),
+            {
+              compilerOptions: {
+                module: ts.ModuleKind.ESNext,
+                target: ts.ScriptTarget.ES2022,
+              },
+            },
+          ).outputText,
+        ).toString('base64'),
+    ),
+);
+routeSource = routeSource.replace(
   "from '@/lib/team-access'",
   'from ' +
     JSON.stringify(

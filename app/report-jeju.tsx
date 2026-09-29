@@ -412,11 +412,13 @@ export function JejuImportPanel({
               <span>
                 {entry.filename} · {entry.actor} ·{' '}
                 {new Date(entry.at).toLocaleString('ko-KR')} ·{' '}
-                {entry.after.length}일 {entry.undoneAt ? '· 복원됨' : ''}
+                {entry.pruned
+                  ? '· 되돌리기 기록 정리됨'
+                  : `${entry.after.length}일 ${entry.undoneAt ? '· 복원됨' : ''}`}
               </span>
               <Button
                 variant="outline"
-                disabled={disabled || !!entry.undoneAt}
+                disabled={disabled || !!entry.undoneAt || !!entry.pruned}
                 onClick={() =>
                   void run(async () => {
                     await onPersist(undoJejuImport(store, entry.id));

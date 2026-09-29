@@ -94,6 +94,8 @@ export type JejuArrivalImport = {
   before: (JejuArrival | null)[];
   after: JejuArrival[];
   undoneAt?: string;
+  /** 새 업로드가 들어와 되돌리기용 복사본을 비운 기록입니다(이름표만 남김). */
+  pruned?: boolean;
 };
 export type ReportDocument = {
   id: string;
@@ -132,6 +134,8 @@ export type StatisticImport = {
   before: (Statistic | null)[];
   after: Statistic[];
   undoneAt?: string;
+  /** 새 업로드가 들어와 되돌리기용 복사본을 비운 기록입니다(이름표만 남김). */
+  pruned?: boolean;
 };
 export type ReportStore = {
   reports: ReportDocument[];
@@ -141,6 +145,8 @@ export type ReportStore = {
   jejuArrivals?: JejuArrival[];
   jejuImports?: JejuArrivalImport[];
   archiveLinks: Record<string, string>;
+  /** 백업 후 자동 정리한 확정 보고서 id. 오래 열어 둔 화면이 다시 살려내지 못하게 기록합니다. */
+  deletedReportIds?: string[];
 };
 export type TaskStatusHistory = {
   at: string;

@@ -6,6 +6,7 @@ import {
   requireTeamAccess,
 } from '@/lib/auth-server';
 import { getSupabaseAdmin, isSupabaseConfigured } from '@/lib/supabase-server';
+import { pruneImportHistory, REQUEST_LIMIT_BYTES } from '@/lib/retention';
 import { LEGACY_TEAM_ID, reportOwnerFor } from '@/lib/team-access';
 import { reportValidation, validateStatistic } from '@/lib/reports';
 import {
@@ -123,8 +124,12 @@ export async function PUT(request: Request) {
   try {
     const { actor, teamId } = await context(request);
     const body = await request.text();
-    if (body.length > 12_000_000)
-      throw new ApiError('보고서 저장량이 요청 한도를 넘었습니다.', 413);
+    // 서버가 한 번에 받을 수 있는 양(4.5MB)보다 조금 낮은 4MB를 바이트 기준으로 확인합니다.
+    if (Buffer.byteLength(body, 'utf8') > REQUEST_LIMIT_BYTES)
+      throw new ApiError(
+        '보고서 저장소가 가득 찼습니다. 마스터에게 전체 백업을 요청해 주세요(백업하면 1개월 지난 확정 보고서가 정리됩니다).',
+        413,
+      );
     const input = JSON.parse(body) as {
       version: number;
       store: ReportStore;
@@ -145,7 +150,10 @@ export async function PUT(request: Request) {
       const before = await readTeamStore(teamId);
       let store: ReportStore;
       try {
-        store = mergeSharedStore(before.store, incoming, input.bases ?? {}, actor);
+        // CSV·입도객 업로드는 최근 1건만 되돌리기 복사본을 남깁니다.
+        store = pruneImportHistory(
+          mergeSharedStore(before.store, incoming, input.bases ?? {}, actor),
+        );
       } catch (error) {
         if (error instanceof ReportShareError)
           throw new ApiError(error.message, error.status);

@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useCurrentTeam, withTeam } from '@/app/team-context';
+import { byteLength, REQUEST_LIMIT_BYTES } from '@/lib/retention';
 import {
   Archive,
   CheckCircle2,
@@ -285,28 +286,34 @@ export default function ReportsView({
     setBusy(true);
     setError('');
     try {
+      // 팀 저장소는 서버가 병합한다. 내가 바꾼 보고서마다 내가 마지막으로 본 서버 값을 함께 보낸다.
+      const payload = JSON.stringify({
+        version,
+        store: next,
+        bases: {
+          reports: Object.fromEntries(
+            next.reports
+              .map(
+                (r) => [r, store.reports.find((b) => b.id === r.id)] as const,
+              )
+              .filter(([r, b]) => !sameReportValue(r, b))
+              .map(([r, b]) => [r.id, b ?? null]),
+          ),
+          archiveLinks: store.archiveLinks,
+        },
+      });
+      // 서버가 한 번에 받을 수 있는 양을 넘으면 보내기 전에 알려 준다.
+      if (byteLength(payload) > REQUEST_LIMIT_BYTES)
+        throw new Error(
+          '보고서 저장소가 가득 찼습니다. 마스터에게 전체 백업을 요청해 주세요(백업하면 1개월 지난 확정 보고서가 정리됩니다).',
+        );
       const response = await fetch(withTeam('/api/reports', teamId), {
         method: 'PUT',
         headers: {
           authorization: 'Bearer ' + accessToken,
           'content-type': 'application/json',
         },
-        // 팀 저장소는 서버가 병합한다. 내가 바꾼 보고서마다 내가 마지막으로 본 서버 값을 함께 보낸다.
-        body: JSON.stringify({
-          version,
-          store: next,
-          bases: {
-            reports: Object.fromEntries(
-              next.reports
-                .map(
-                  (r) => [r, store.reports.find((b) => b.id === r.id)] as const,
-                )
-                .filter(([r, b]) => !sameReportValue(r, b))
-                .map(([r, b]) => [r.id, b ?? null]),
-            ),
-            archiveLinks: store.archiveLinks,
-          },
-        }),
+        body: payload,
       });
       const body = (await response.json()) as {
         error?: string;
@@ -1600,11 +1607,13 @@ export default function ReportsView({
                 <span>
                   {entry.filename} · {entry.actor} ·{' '}
                   {entry.at.slice(0, 16).replace('T', ' ')} ·{' '}
-                  {entry.after.length}행 {entry.undoneAt ? '· 복원됨' : ''}
+                  {entry.pruned
+                    ? '· 되돌리기 기록 정리됨'
+                    : `${entry.after.length}행 ${entry.undoneAt ? '· 복원됨' : ''}`}
                 </span>
                 <Button
                   variant="outline"
-                  disabled={busy || !!entry.undoneAt || readOnly}
+                  disabled={busy || !!entry.undoneAt || !!entry.pruned || readOnly}
                   onClick={() =>
                     void run(async () => {
                       await persist(undoStatisticImport(store, entry.id));

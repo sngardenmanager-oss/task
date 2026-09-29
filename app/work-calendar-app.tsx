@@ -3,6 +3,7 @@
 import {
   useDeferredValue,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
@@ -59,6 +60,14 @@ import {
 import TeamManagementPanel from '@/app/team-management';
 import TeamSwitcher from '@/app/team-switcher';
 import { LEGACY_TEAM_ID } from '@/lib/team-access';
+import BackupReminder from '@/app/backup-reminder';
+import {
+  applyDelta,
+  deltaAsState,
+  diffWorkspace,
+  isEmptyDelta,
+  type WorkspaceDelta,
+} from '@/lib/workspace-sync';
 import {
   COMPANY_CATEGORY_ID,
   COMPANY_COLOR,
@@ -709,24 +718,181 @@ export default function WorkCalendarApp({
     selectedTimeRef.current = selectedTime;
   }, [selectedTime]);
 
-  useEffect(() => {
-    const key = offlineKey(actor.email, team.id);
-    const timer = window.setTimeout(() => {
-      try {
-        const raw = window.localStorage.getItem(key);
-        if (!raw) return;
-        const offline = JSON.parse(raw) as WorkspaceState;
-        const recovered = mergeWorkspaceStates(initialData, offline);
-        if (JSON.stringify(recovered) !== JSON.stringify(initialData)) {
-          setData(recovered);
-          setToast('기기에 남아 있던 업무 기록을 서버 데이터와 합쳤습니다.');
-        }
-      } catch {
-        window.localStorage.removeItem(key);
+  /** 마지막으로 서버와 맞춘 상태. 저장할 때 이것과 달라진 항목만 보냅니다. */
+  const baseRef = useRef<WorkspaceState>(initialData);
+  const savingRef = useRef(false);
+  const saveAgainRef = useRef(false);
+  /** 저장 실패 상태. retry=true이면 30초마다·인터넷 재연결 때 자동으로 다시 저장합니다. */
+  const [saveProblem, setSaveProblem] = useState<{
+    message: string;
+    retry: boolean;
+    at: string;
+  } | null>(null);
+  const pendingKey = `${offlineKey(actor.email, team.id)}:pending`;
+
+  /** 아직 서버에 저장되지 않은 변경분을 기기에 보관합니다. 프로그램을 껐다 켜도 다시 보냅니다. */
+  function rememberPending(delta: WorkspaceDelta, deletedIds: string[]) {
+    try {
+      window.localStorage.setItem(
+        pendingKey,
+        JSON.stringify({ delta, deletedIds, at: new Date().toISOString() }),
+      );
+    } catch {
+      // 기기 저장소를 못 써도 저장 시도는 계속합니다.
+    }
+  }
+  function forgetPending() {
+    try {
+      window.localStorage.removeItem(pendingKey);
+    } catch {
+      // 무시
+    }
+  }
+
+  /** 서버가 돌려준 최신 상태를 기준으로 삼아 화면에 반영합니다(다시 저장하지 않음). */
+  function acceptServerState(state: WorkspaceState) {
+    baseRef.current = state;
+    skipSave.current = true;
+    setData(state);
+  }
+
+  /** 기준과 달라진 항목만 서버에 보냅니다. force=true이면 바뀐 게 없어도 최신 상태를 받아옵니다. */
+  async function flushChanges(force = false): Promise<boolean> {
+    if (savingRef.current) {
+      saveAgainRef.current = true;
+      return false;
+    }
+    const snapshot = dataRef.current;
+    const delta = diffWorkspace(baseRef.current, snapshot);
+    const deletedIds = [...deletedIdsRef.current];
+    const hasChanges = !isEmptyDelta(delta) || deletedIds.length > 0;
+    if (!force && !hasChanges) {
+      forgetPending();
+      setSaveProblem(null);
+      return true;
+    }
+    if (hasChanges) rememberPending(delta, deletedIds);
+    savingRef.current = true;
+    try {
+      const response = await fetch(withTeam('/api/state', team.id), {
+        method: 'PUT',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ state: deltaAsState(delta), deletedIds }),
+      });
+      if (response.status === 401) {
+        await onSignOut();
+        return false;
       }
-    }, 0);
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        state?: WorkspaceState;
+      };
+      if (!response.ok || !result.state) {
+        setSaveProblem({
+          message: result.error ?? '서버에 저장하지 못했습니다.',
+          retry:
+            response.status >= 500 ||
+            response.status === 408 ||
+            response.status === 429,
+          at: new Date().toISOString(),
+        });
+        return false;
+      }
+      deletedIds.forEach((id) => deletedIdsRef.current.delete(id));
+      baseRef.current = result.state;
+      if (dataRef.current === snapshot) {
+        skipSave.current = true;
+        setData(result.state);
+        forgetPending();
+      } else {
+        // 저장하는 사이에 또 바꾼 내용은 서버 최신 상태 위에 다시 얹어 이어서 저장합니다.
+        setData(
+          applyDelta(
+            result.state,
+            diffWorkspace(snapshot, dataRef.current),
+            deletedIdsRef.current,
+          ),
+        );
+      }
+      setSaveProblem(null);
+      return true;
+    } catch {
+      setSaveProblem({
+        message: '인터넷 연결을 확인해 주세요.',
+        retry: true,
+        at: new Date().toISOString(),
+      });
+      return false;
+    } finally {
+      savingRef.current = false;
+      if (saveAgainRef.current) {
+        saveAgainRef.current = false;
+        window.setTimeout(() => void flushRef.current(), 0);
+      }
+    }
+  }
+  const flushRef = useRef(flushChanges);
+  useEffect(() => {
+    flushRef.current = flushChanges;
+  });
+
+  /** 처음 열 때 한 번: 저장하지 못한 변경분이 기기에 있으면 서버 최신 상태 위에 다시 얹어 저장합니다. */
+  const recoverPending = useEffectEvent(() => {
+    try {
+      const raw = window.localStorage.getItem(pendingKey);
+      if (raw) {
+        const pending = JSON.parse(raw) as {
+          delta: WorkspaceDelta;
+          deletedIds: string[];
+        };
+        pending.deletedIds.forEach((id) => deletedIdsRef.current.add(id));
+        setData(applyDelta(initialData, pending.delta, pending.deletedIds));
+        setToast('저장하지 못했던 변경을 다시 저장합니다.');
+        return;
+      }
+      // 예전 방식의 전체 사본이 남아 있으면 서버에 없는 새 항목만 한 번 되살리고 지웁니다.
+      const legacyKey = offlineKey(actor.email, team.id);
+      const legacy = window.localStorage.getItem(legacyKey);
+      if (!legacy) return;
+      window.localStorage.removeItem(legacyKey);
+      const recovered = mergeWorkspaceStates(
+        initialData,
+        JSON.parse(legacy) as WorkspaceState,
+      );
+      if (JSON.stringify(recovered) !== JSON.stringify(initialData)) {
+        setData(recovered);
+        setToast('기기에 남아 있던 업무 기록을 서버 데이터와 합쳤습니다.');
+      }
+    } catch {
+      forgetPending();
+    }
+  });
+  useEffect(() => {
+    const timer = window.setTimeout(() => recoverPending(), 0);
     return () => window.clearTimeout(timer);
-  }, [actor.email, initialData, team.id]);
+  }, []);
+
+  useEffect(() => {
+    if (!saveProblem?.retry) return;
+    const retry = () => void flushRef.current();
+    const timer = window.setTimeout(retry, 30_000);
+    window.addEventListener('online', retry);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('online', retry);
+    };
+  }, [saveProblem]);
+
+  useEffect(() => {
+    if (!saveProblem) return;
+    // 저장 안 된 변경이 있을 때 창을 닫으려 하면 한 번 확인합니다.
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [saveProblem]);
 
   useEffect(() => {
     const currentEntry = (): AppHistoryEntry => ({
@@ -801,56 +967,9 @@ export default function WorkCalendarApp({
       skipSave.current = false;
       return;
     }
-    const timer = window.setTimeout(async () => {
-      const deletedIds = [...deletedIdsRef.current];
-      window.localStorage.setItem(
-        offlineKey(actor.email, team.id),
-        JSON.stringify(data),
-      );
-      try {
-        const response = await fetch(withTeam('/api/state', team.id), {
-          method: 'PUT',
-          headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({ state: data, deletedIds }),
-        });
-        if (response.status === 401) {
-          await onSignOut();
-          return;
-        }
-        const result = (await response.json()) as {
-          error?: string;
-          state?: WorkspaceState;
-        };
-        if (!response.ok) {
-          setToast(
-            result.error ?? '서버에 저장하지 못해 기기에 임시 저장했습니다.',
-          );
-          return;
-        }
-        deletedIds.forEach((id) => deletedIdsRef.current.delete(id));
-        if (
-          result.state &&
-          dataRef.current === data &&
-          JSON.stringify(result.state) !== JSON.stringify(data)
-        ) {
-          window.localStorage.setItem(
-            offlineKey(actor.email, team.id),
-            JSON.stringify(result.state),
-          );
-          skipSave.current = true;
-          setData(result.state);
-        }
-      } catch {
-        setToast(
-          '연결이 없어 기기에 임시 저장했습니다. 연결되면 다시 저장됩니다.',
-        );
-      }
-    }, 500);
+    const timer = window.setTimeout(() => void flushRef.current(), 500);
     return () => window.clearTimeout(timer);
-  }, [accessToken, actor.email, data, onSignOut, team.id]);
+  }, [data]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1544,41 +1663,11 @@ export default function WorkCalendarApp({
     if (refreshing) return;
     setRefreshing(true);
     try {
-      const deletedIds = [...deletedIdsRef.current];
-      const response = await fetch(withTeam('/api/state', team.id), {
-        method: 'PUT',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({ state: dataRef.current, deletedIds }),
-      });
-      const result = (await response.json()) as {
-        error?: string;
-        state?: WorkspaceState;
-      };
-      if (response.status === 401) {
-        await onSignOut();
-        return;
-      }
-      if (!response.ok) {
-        throw new Error(result.error ?? '최신 데이터를 불러오지 못했습니다.');
-      }
-      deletedIds.forEach((id) => deletedIdsRef.current.delete(id));
-      if (result.state) {
-        window.localStorage.setItem(
-          offlineKey(actor.email, team.id),
-          JSON.stringify(result.state),
-        );
-        skipSave.current = true;
-        setData(result.state);
-      }
-      setToast('캘린더를 최신 내용으로 새로고침했습니다.');
-    } catch (error) {
+      const ok = await flushChanges(true);
       setToast(
-        error instanceof Error
-          ? error.message
-          : '최신 데이터를 불러오지 못했습니다.',
+        ok
+          ? '캘린더를 최신 내용으로 새로고침했습니다.'
+          : '최신 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.',
       );
     } finally {
       setRefreshing(false);
@@ -1801,15 +1890,18 @@ export default function WorkCalendarApp({
     // 지금 보고 있는 팀으로 승인했을 때만 화면의 사용자 목록에 더합니다(서버에는 이미 저장됨).
     if (result.teamId === team.id) {
       const approved = result.member;
-      skipSave.current = true;
-      setData((current) => ({
-        ...current,
-        members: current.members.some((member) => member.id === approved.id)
-          ? current.members.map((member) =>
+      const withMember = (state: WorkspaceState) => ({
+        ...state,
+        members: state.members.some((member) => member.id === approved.id)
+          ? state.members.map((member) =>
               member.id === approved.id ? approved : member,
             )
-          : [...current.members, approved],
-      }));
+          : [...state.members, approved],
+      });
+      // 서버에는 이미 저장되었으므로 기준에도 넣어 다시 보내지 않습니다.
+      baseRef.current = withMember(baseRef.current);
+      skipSave.current = true;
+      setData(withMember);
     }
     setPendingRegistrations(result.registrations ?? []);
     const teamName =
@@ -1848,8 +1940,7 @@ export default function WorkCalendarApp({
       }
       if (!response.ok || !result.state)
         throw new Error(result.error ?? '팀에서 내보내지 못했습니다.');
-      skipSave.current = true;
-      setData(result.state);
+      acceptServerState(result.state);
       setToast(`${member.name}님을 팀에서 내보냈습니다.`);
     } catch (error) {
       setToast(
@@ -2133,6 +2224,35 @@ export default function WorkCalendarApp({
             </div>
           </div>
 
+          {saveProblem && (
+            <div
+              role="alert"
+              className="mb-5 flex flex-col gap-3 rounded-2xl border border-[#e7b9b2] bg-[#fbeeeb] p-4 text-sm text-[#8d342e] sm:flex-row sm:items-center"
+            >
+              <span className="flex-1">
+                <strong className="block">저장되지 않은 변경이 있습니다.</strong>
+                <span className="block">{saveProblem.message}</span>
+                {saveProblem.retry
+                  ? '30초마다, 그리고 인터넷이 다시 연결되면 자동으로 다시 저장합니다. 변경 내용은 이 기기에 보관되어 있습니다.'
+                  : '내용을 확인한 뒤 다시 저장해 주세요.'}
+              </span>
+              <Button
+                variant="outline"
+                className="bg-white"
+                onClick={() => void flushChanges()}
+              >
+                <RefreshCw />
+                지금 다시 저장
+              </Button>
+            </div>
+          )}
+          {isMaster && (
+            <BackupReminder
+              accessToken={accessToken}
+              teams={teams}
+              className="mb-5"
+            />
+          )}
           {view === 'today' && upcomingCompanyEvents.length > 0 && (
             <CompanyEventStrip
               events={upcomingCompanyEvents}

@@ -221,6 +221,8 @@ export function undoJejuImport(store: ReportStore, id: string): ReportStore {
   const entry = store.jejuImports?.find((i) => i.id === id);
   if (!entry || entry.undoneAt)
     throw new Error('되돌릴 입도객 업로드가 없습니다.');
+  if (entry.pruned)
+    throw new Error('새 업로드가 있어 이전 업로드는 되돌릴 수 없습니다.');
   if (!validRows(entry.after) || entry.before.length !== entry.after.length)
     throw new Error('입도객 이력 형식 오류');
   for (const row of entry.after)

@@ -127,6 +127,7 @@ function applyImports<
     before: (Row | null)[];
     after: Row[];
     undoneAt?: string;
+    pruned?: boolean;
   },
 >(
   label: string,
@@ -145,7 +146,8 @@ function applyImports<
       continue;
     }
     const current = nextEntries[index];
-    if (!entry.undoneAt || current.undoneAt) continue;
+    // 복사본을 비운(정리된) 기록은 되돌릴 수 없습니다.
+    if (!entry.undoneAt || current.undoneAt || current.pruned) continue;
     // 되돌리기: 그 사이 다른 사람이 같은 날짜를 고쳤으면 자동 복원하지 않는다.
     for (const row of current.after)
       if (
@@ -214,7 +216,9 @@ export function mergeSharedStore(
     if (value !== seen) store.archiveLinks = { ...store.archiveLinks, [key]: value };
   }
 
+  const removed = new Set(store.deletedReportIds ?? []);
   for (const report of incoming.reports ?? []) {
+    if (removed.has(report.id)) continue; // 백업 후 정리된 보고서는 다시 살리지 않습니다.
     const current = store.reports.find((item) => item.id === report.id);
     let base: ReportDocument | null;
     if (bases.reports) {

@@ -790,6 +790,8 @@ export function undoStatisticImport(
 ): ReportStore {
   const entry = store.imports.find((i) => i.id === id);
   if (!entry || entry.undoneAt) throw new Error('되돌릴 업로드가 없습니다.');
+  if (entry.pruned)
+    throw new Error('새 업로드가 있어 이전 업로드는 되돌릴 수 없습니다.');
   for (const row of entry.after)
     if (
       !sameReportValue(
