@@ -59,10 +59,17 @@ import {
 import TeamManagementPanel from '@/app/team-management';
 import TeamSwitcher from '@/app/team-switcher';
 import { LEGACY_TEAM_ID } from '@/lib/team-access';
+import {
+  COMPANY_CATEGORY_ID,
+  COMPANY_COLOR,
+  COMPANY_TASK_PREFIX,
+  companyEventAsTask,
+} from '@/lib/company-events';
 import { buildCalendarIcs } from '@/lib/ical';
 import type {
   Category,
   Comment,
+  CompanyEvent,
   Member,
   NewsItem,
   ProjectTemplate,
@@ -616,6 +623,7 @@ export default function WorkCalendarApp({
   teams,
   isMaster,
   signIn,
+  companyEvents,
   onSwitchTeam,
   accessToken,
   onSignOut,
@@ -628,6 +636,8 @@ export default function WorkCalendarApp({
   isMaster: boolean;
   /** 서버가 본 로그인 이메일과 마스터 설정 개수. 설정 화면의 로그인 확인 칸에 보여 줍니다. */
   signIn: { email: string; masterConfigured: number };
+  /** 이 팀에 보이는 전사 공통 일정(읽기 전용). */
+  companyEvents: CompanyEvent[];
   onSwitchTeam: (teamId: string) => void;
   accessToken: string;
   onSignOut: () => Promise<void>;
@@ -923,6 +933,38 @@ export default function WorkCalendarApp({
 
   const selectedTask =
     data.tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const [openCompanyEvent, setOpenCompanyEvent] = useState<CompanyEvent | null>(
+    null,
+  );
+  /** 전사 일정은 캘린더에만 읽기 전용 막대로 끼워 넣습니다(팀 데이터에는 저장하지 않음). */
+  const calendarData = useMemo(
+    () => ({
+      ...data,
+      categories: [
+        ...data.categories,
+        {
+          id: COMPANY_CATEGORY_ID,
+          name: '전사 일정',
+          color: COMPANY_COLOR,
+          active: true,
+        },
+      ],
+    }),
+    [data],
+  );
+  const companyTasks = useMemo(
+    () => companyEvents.map(companyEventAsTask),
+    [companyEvents],
+  );
+  const upcomingCompanyEvents = useMemo(() => {
+    const start = isoDate();
+    const end = shiftIsoDate(start, 14);
+    return companyEvents
+      .filter(
+        (event) => event.date <= end && (event.endDate ?? event.date) >= start,
+      )
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [companyEvents]);
   const selectedRoutine =
     data.routines.find((routine) => routine.id === selectedRoutineId) ?? null;
   const today = isoDate();
@@ -1075,6 +1117,14 @@ export default function WorkCalendarApp({
   }
 
   function openTask(taskId: string) {
+    if (taskId.startsWith(COMPANY_TASK_PREFIX)) {
+      setOpenCompanyEvent(
+        companyEvents.find(
+          (event) => `${COMPANY_TASK_PREFIX}${event.id}` === taskId,
+        ) ?? null,
+      );
+      return;
+    }
     openModal('detail', { selectedTaskId: taskId });
   }
 
@@ -2083,6 +2133,12 @@ export default function WorkCalendarApp({
             </div>
           </div>
 
+          {view === 'today' && upcomingCompanyEvents.length > 0 && (
+            <CompanyEventStrip
+              events={upcomingCompanyEvents}
+              open={setOpenCompanyEvent}
+            />
+          )}
           {view === 'today' && (
             <TodayView
               data={data}
@@ -2103,8 +2159,8 @@ export default function WorkCalendarApp({
           )}
           {view === 'calendar' && (
             <CalendarView
-              data={data}
-              tasks={visibleTasks}
+              data={calendarData}
+              tasks={[...visibleTasks, ...companyTasks]}
               month={monthCursor}
               setMonth={setMonthCursor}
               openTask={openTask}
@@ -2342,6 +2398,12 @@ export default function WorkCalendarApp({
           }
         />
       )}
+      {openCompanyEvent && (
+        <CompanyEventModal
+          event={openCompanyEvent}
+          close={() => setOpenCompanyEvent(null)}
+        />
+      )}
       {modal === 'routineDetail' && selectedRoutine && (
         <InteractiveRoutineDetail
           routine={selectedRoutine}
@@ -2442,6 +2504,75 @@ function SidebarContent({
         </button>
       </div>
     </>
+  );
+}
+
+/** 오늘 화면 위쪽: 앞으로 2주 안의 전사 공통 일정. */
+function CompanyEventStrip({
+  events,
+  open,
+}: {
+  events: CompanyEvent[];
+  open: (event: CompanyEvent) => void;
+}) {
+  return (
+    <section
+      className="mb-5 rounded-3xl border p-4"
+      style={{ borderColor: `${COMPANY_COLOR}55`, background: '#fdf6ea' }}
+    >
+      <h3 className="mb-2 text-sm font-black" style={{ color: COMPANY_COLOR }}>
+        전사 공통 일정 · 2주 이내
+      </h3>
+      <div className="flex flex-wrap gap-2">
+        {events.map((event) => (
+          <button
+            key={event.id}
+            onClick={() => open(event)}
+            className="rounded-xl border border-[#ead7b8] bg-white px-3 py-2 text-left text-sm hover:border-[#b7791f]"
+          >
+            <strong className="block">{event.title}</strong>
+            <span className="text-xs text-[#806743]">
+              {formatDate(event.date)}
+              {event.endDate ? ` ~ ${formatDate(event.endDate)}` : ''}
+              {event.time ? ` ${event.time}` : ''}
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** 전사 공통 일정 보기(읽기 전용). 수정은 마스터가 전체 팀 화면에서 합니다. */
+function CompanyEventModal({
+  event,
+  close,
+}: {
+  event: CompanyEvent;
+  close: () => void;
+}) {
+  return (
+    <ModalShell
+      title={event.title}
+      description="전사 공통 일정 · 마스터가 등록한 일정입니다."
+      close={close}
+    >
+      <dl className="grid grid-cols-[70px_1fr] gap-y-2 text-sm">
+        <dt className="font-bold text-[#748078]">일정</dt>
+        <dd>
+          {formatDate(event.date)}
+          {event.endDate ? ` ~ ${formatDate(event.endDate)}` : ''}
+          {event.time
+            ? ` ${event.time}${event.endTime ? `~${event.endTime}` : ''}`
+            : ' (종일)'}
+        </dd>
+      </dl>
+      {event.description && (
+        <p className="mt-4 whitespace-pre-wrap rounded-2xl bg-white p-3 text-sm">
+          <LinkifiedText text={event.description} />
+        </p>
+      )}
+    </ModalShell>
   );
 }
 

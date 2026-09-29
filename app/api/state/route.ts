@@ -6,6 +6,8 @@ import {
   requestedTeam,
   requireTeamAccess,
 } from '@/lib/auth-server';
+import { eventsForTeam } from '@/lib/company-events';
+import { listCompanyEvents } from '@/lib/company-events-store';
 import { keepRetiredMembers, planMembershipSync } from '@/lib/team-access';
 import {
   deactivateMembership,
@@ -152,6 +154,13 @@ export async function GET(request: Request) {
       user.email!,
       requestedTeam(request),
     );
+    // 전사 일정은 부가 정보라, 읽기에 실패해도 업무 화면은 열리게 합니다.
+    const companyEvents = await listCompanyEvents()
+      .then((events) => eventsForTeam(events, team.id))
+      .catch((error: unknown) => {
+        console.error(error);
+        return [];
+      });
     return Response.json(
       {
         state,
@@ -159,6 +168,7 @@ export async function GET(request: Request) {
         team,
         teams,
         isMaster,
+        companyEvents,
         // 로그인 확인 칸은 마스터에게만 보이므로 마스터 설정 개수도 마스터에게만 보냅니다.
         signedInEmail: user.email!.toLowerCase(),
         masterConfigured: isMaster ? masterEmailCount() : 0,

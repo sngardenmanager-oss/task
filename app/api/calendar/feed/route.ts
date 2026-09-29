@@ -2,6 +2,8 @@ import {
   isValidCalendarFeedToken,
   isValidTeamCalendarFeedToken,
 } from '@/lib/calendar-feed';
+import { companyEventAsTask, eventsForTeam } from '@/lib/company-events';
+import { listCompanyEvents } from '@/lib/company-events-store';
 import { buildCalendarIcs } from '@/lib/ical';
 import { ALL_TEAMS_ID, LEGACY_TEAM_ID, normalizeEmail } from '@/lib/team-access';
 import { listMemberships, listTeams } from '@/lib/team-store';
@@ -65,10 +67,19 @@ export async function GET(request: Request) {
       : isValidCalendarFeedToken(memberId, token);
     if (!memberId || !token || !valid) return notFound();
 
+    const events = await listCompanyEvents().catch(() => []);
+    const withCompany = (state: WorkspaceState, forTeam: string | null) => ({
+      ...state,
+      tasks: [
+        ...state.tasks,
+        ...(forTeam ? eventsForTeam(events, forTeam) : events).map(companyEventAsTask),
+      ],
+    });
+
     if (memberId === 'master' && teamParam) {
-      const state =
-        teamId === ALL_TEAMS_ID ? await allTeamsState() : await readWorkspaceState(teamId);
-      return ics(state, teamId === ALL_TEAMS_ID ? '스누피가든 전체 팀' : undefined);
+      if (teamId === ALL_TEAMS_ID)
+        return ics(withCompany(await allTeamsState(), null), '스누피가든 전체 팀');
+      return ics(withCompany(await readWorkspaceState(teamId), teamId));
     }
     if (teamId === ALL_TEAMS_ID) return notFound();
 
@@ -81,7 +92,7 @@ export async function GET(request: Request) {
       await listMemberships({ teamId, email: normalizeEmail(member.email) })
     )[0];
     if (!membership?.active) return notFound();
-    return ics(state, `스누피가든 ${team.name}`);
+    return ics(withCompany(state, teamId), `스누피가든 ${team.name}`);
   } catch (error) {
     console.error('Calendar feed:', error);
     return new Response('Calendar unavailable', { status: 503 });

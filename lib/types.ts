@@ -32,6 +32,22 @@ export type TeamMembership = {
   active: boolean;
 };
 
+/** 전사 공통 일정. 마스터가 등록하고, 대상 팀 캘린더에 읽기 전용으로 보입니다. */
+export type CompanyEvent = {
+  id: string;
+  title: string;
+  description: string;
+  date: string;
+  endDate?: string;
+  /** HH:mm. 비어 있으면 종일 일정입니다. */
+  time?: string;
+  endTime?: string;
+  /** 보여 줄 팀. 비어 있으면 모든 팀입니다. */
+  teamIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 /** 마스터 '전체 팀' 통합 관제에 쓰는 팀 하나의 요약입니다. 업무에는 댓글 본문 대신 댓글 수만 있습니다. */
 export type OverviewTeam = {
   team: Team;

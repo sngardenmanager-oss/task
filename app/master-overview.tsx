@@ -8,7 +8,9 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  FileText,
   LayoutDashboard,
+  PartyPopper,
   Leaf,
   LoaderCircle,
   LogOut,
@@ -18,12 +20,23 @@ import {
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import CombinedReportView from '@/app/combined-report-view';
+import CompanyEventsPanel from '@/app/company-events-panel';
 import TeamSwitcher from '@/app/team-switcher';
+import { COMPANY_COLOR, companyEventAsTask } from '@/lib/company-events';
 import { ALL_TEAMS_ID } from '@/lib/team-access';
-import type { OverviewTeam, Task, Team } from '@/lib/types';
+import type { CompanyEvent, OverviewTeam, Task, Team } from '@/lib/types';
 
-type Tab = 'today' | 'calendar' | 'tasks' | 'team' | 'requests';
+type Tab = 'today' | 'calendar' | 'tasks' | 'team' | 'requests' | 'events' | 'report';
 type OverviewTask = OverviewTeam['tasks'][number] & { team: Team };
+/** 전사 일정을 통합 캘린더에 함께 그리기 위한 가상 팀입니다. */
+const companyTeam: Team = {
+  id: '__company__',
+  name: '전사 일정',
+  color: COMPANY_COLOR,
+  active: true,
+  sortOrder: -1,
+};
 
 const tabs: { id: Tab; label: string; icon: typeof Bell }[] = [
   { id: 'today', label: '오늘', icon: LayoutDashboard },
@@ -31,6 +44,8 @@ const tabs: { id: Tab; label: string; icon: typeof Bell }[] = [
   { id: 'tasks', label: '전체 업무', icon: ClipboardList },
   { id: 'team', label: '팀 현황', icon: Users },
   { id: 'requests', label: '완료 요청', icon: Bell },
+  { id: 'events', label: '전사 일정', icon: PartyPopper },
+  { id: 'report', label: '통합 보고서', icon: FileText },
 ];
 const statusLabel: Record<Task['status'], string> = {
   scheduled: '예정',
@@ -74,6 +89,7 @@ export default function MasterOverview({
   onSignOut: () => Promise<void>;
 }) {
   const [overview, setOverview] = useState<OverviewTeam[] | null>(null);
+  const [companyEvents, setCompanyEvents] = useState<CompanyEvent[]>([]);
   const [error, setError] = useState('');
   const [tab, setTab] = useState<Tab>('today');
   const [loading, setLoading] = useState(false);
@@ -93,11 +109,13 @@ export default function MasterOverview({
       }
       const result = (await response.json()) as {
         teams?: OverviewTeam[];
+        companyEvents?: CompanyEvent[];
         error?: string;
       };
       if (!response.ok || !result.teams)
         throw new Error(result.error ?? '전체 팀 현황을 불러오지 못했습니다.');
       setOverview(result.teams);
+      setCompanyEvents(result.companyEvents ?? []);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '불러오지 못했습니다.');
     } finally {
@@ -147,8 +165,8 @@ export default function MasterOverview({
   const requests = tasks.filter((task) => task.status === 'completion_requested');
 
   return (
-    <main className="min-h-screen bg-[#f5f3ec] text-[#26352d]">
-      <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-[#d8ded4] bg-[#fbfaf5]/95 px-4 backdrop-blur md:px-7">
+    <main className="min-h-screen bg-[#f5f3ec] text-[#26352d] print:bg-white">
+      <header className="sticky top-0 z-40 flex h-16 print:hidden items-center justify-between border-b border-[#d8ded4] bg-[#fbfaf5]/95 px-4 backdrop-blur md:px-7">
         <div className="flex items-center gap-3">
           <div className="grid size-10 place-items-center rounded-2xl bg-[#26352d] text-white shadow-sm">
             <Leaf className="size-5" />
@@ -185,8 +203,8 @@ export default function MasterOverview({
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-[1680px] md:grid-cols-[230px_minmax(0,1fr)]">
-        <aside className="border-b border-[#d8ded4] bg-[#fbfaf5] p-4 md:min-h-[calc(100vh-64px)] md:border-b-0 md:border-r">
+      <div className="mx-auto grid max-w-[1680px] md:grid-cols-[230px_minmax(0,1fr)] print:block">
+        <aside className="border-b border-[#d8ded4] bg-[#fbfaf5] p-4 md:min-h-[calc(100vh-64px)] md:border-b-0 md:border-r print:hidden">
           <TeamSwitcher
             current={ALL_TEAMS_ID}
             teams={switchableTeams}
@@ -215,7 +233,7 @@ export default function MasterOverview({
           </p>
         </aside>
 
-        <section className="min-w-0 p-4 pb-16 md:p-7">
+        <section className="min-w-0 p-4 pb-16 md:p-7 print:p-0">
           {error && (
             <p role="alert" className="mb-4 rounded-xl bg-[#f7e8e4] px-3 py-2 text-sm font-semibold text-[#8d342e]">
               {error}
@@ -232,9 +250,21 @@ export default function MasterOverview({
               )}
               {tab === 'calendar' && (
                 <OverviewCalendar
-                  teams={overview.map((entry) => entry.team)}
-                  tasks={tasks}
-                  onSelect={setSelected}
+                  teams={[
+                    ...(companyEvents.length ? [companyTeam] : []),
+                    ...overview.map((entry) => entry.team),
+                  ]}
+                  tasks={[
+                    ...companyEvents.map((event) => ({
+                      ...companyEventAsTask(event),
+                      commentCount: 0,
+                      team: companyTeam,
+                    })),
+                    ...tasks,
+                  ]}
+                  onSelect={(task) =>
+                    task.team.id === companyTeam.id ? setTab('events') : setSelected(task)
+                  }
                 />
               )}
               {tab === 'tasks' && (
@@ -246,6 +276,15 @@ export default function MasterOverview({
                 />
               )}
               {tab === 'team' && <TeamLoad overview={overview} />}
+              {tab === 'events' && (
+                <CompanyEventsPanel
+                  events={companyEvents}
+                  teams={overview.map((entry) => entry.team)}
+                  accessToken={accessToken}
+                  onChanged={setCompanyEvents}
+                />
+              )}
+              {tab === 'report' && <CombinedReportView accessToken={accessToken} />}
               {tab === 'requests' && (
                 <Requests
                   tasks={requests}

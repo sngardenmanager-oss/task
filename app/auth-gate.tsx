@@ -22,6 +22,7 @@ import {
 import { getSupabaseBrowser } from '@/lib/supabase-browser';
 import { ALL_TEAMS_ID } from '@/lib/team-access';
 import type {
+  CompanyEvent,
   Member,
   RegistrationRequest,
   Team,
@@ -44,6 +45,7 @@ type WorkspacePayload = {
   team: Team;
   teams: Team[];
   isMaster: boolean;
+  companyEvents?: CompanyEvent[];
   signedInEmail?: string;
   masterConfigured?: number;
   pendingRegistrations: RegistrationRequest[];
@@ -259,6 +261,7 @@ export default function AuthGate() {
       team={gate.workspace.team}
       teams={gate.workspace.teams}
       isMaster={gate.workspace.isMaster}
+      companyEvents={gate.workspace.companyEvents ?? []}
       signIn={{
         email: gate.workspace.signedInEmail ?? session.user.email ?? '',
         masterConfigured: gate.workspace.masterConfigured ?? 0,
