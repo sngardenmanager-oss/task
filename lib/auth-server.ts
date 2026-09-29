@@ -47,11 +47,15 @@ export async function authenticateRequest(request: Request): Promise<User> {
 }
 
 function masterEmails() {
-  return (process.env.MASTER_EMAILS ?? '')
+  const configured = (process.env.MASTER_EMAILS ?? '')
     .split(',')
     .map((candidate) => candidate.trim().replace(/^["']|["']$/g, '').trim().toLowerCase())
     .filter(Boolean);
+  return [...new Set([...DEFAULT_MASTER_EMAILS, ...configured])];
 }
+
+/** 기본 마스터 계정. 서버 환경변수(MASTER_EMAILS)에 적은 이메일은 여기에 더해집니다. */
+const DEFAULT_MASTER_EMAILS = ['sn.gardenmanager@gmail.com'];
 
 export function isMasterEmail(email: string) {
   return masterEmails().includes(email.trim().toLowerCase());

@@ -4998,9 +4998,7 @@ function SignInCheck({
 }) {
   const hint = isMaster
     ? '마스터로 인식되었습니다. 왼쪽 맨 위 팀 선택에서 전체 팀을 볼 수 있습니다.'
-    : masterConfigured === 0
-      ? '서버에 마스터 이메일(MASTER_EMAILS)이 설정되어 있지 않습니다. Vercel 설정 후 다시 배포해 주세요.'
-      : `서버에 마스터 이메일이 ${masterConfigured}개 설정되어 있지만, 지금 로그인한 이메일은 그중에 없습니다.`;
+    : `마스터 이메일 ${masterConfigured}개 중에 지금 로그인한 이메일이 없습니다. 마스터 계정으로 로그인해 주세요.`;
   return (
     <section className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-5">
       <h3 className="font-black">로그인 확인</h3>
