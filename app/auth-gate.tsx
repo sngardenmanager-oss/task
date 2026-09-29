@@ -44,6 +44,8 @@ type WorkspacePayload = {
   team: Team;
   teams: Team[];
   isMaster: boolean;
+  signedInEmail?: string;
+  masterConfigured?: number;
   pendingRegistrations: RegistrationRequest[];
 };
 
@@ -257,6 +259,10 @@ export default function AuthGate() {
       team={gate.workspace.team}
       teams={gate.workspace.teams}
       isMaster={gate.workspace.isMaster}
+      signIn={{
+        email: gate.workspace.signedInEmail ?? session.user.email ?? '',
+        masterConfigured: gate.workspace.masterConfigured ?? 0,
+      }}
       onSwitchTeam={switchTeam}
       accessToken={session.access_token}
       onSignOut={signOut}

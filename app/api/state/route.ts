@@ -2,6 +2,7 @@ import {
   ApiError,
   apiErrorResponse,
   authenticateRequest,
+  masterEmailCount,
   requestedTeam,
   requireTeamAccess,
 } from '@/lib/auth-server';
@@ -152,7 +153,16 @@ export async function GET(request: Request) {
       requestedTeam(request),
     );
     return Response.json(
-      { state, actor, team, teams, isMaster, pendingRegistrations: [] },
+      {
+        state,
+        actor,
+        team,
+        teams,
+        isMaster,
+        signedInEmail: user.email!.toLowerCase(),
+        masterConfigured: masterEmailCount(),
+        pendingRegistrations: [],
+      },
       { headers: { 'cache-control': 'private, no-store, max-age=0' } },
     );
   } catch (error) {

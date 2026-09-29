@@ -615,6 +615,7 @@ export default function WorkCalendarApp({
   team,
   teams,
   isMaster,
+  signIn,
   onSwitchTeam,
   accessToken,
   onSignOut,
@@ -625,6 +626,8 @@ export default function WorkCalendarApp({
   team: Team;
   teams: Team[];
   isMaster: boolean;
+  /** 서버가 본 로그인 이메일과 마스터 설정 개수. 설정 화면의 로그인 확인 칸에 보여 줍니다. */
+  signIn: { email: string; masterConfigured: number };
   onSwitchTeam: (teamId: string) => void;
   accessToken: string;
   onSignOut: () => Promise<void>;
@@ -2172,6 +2175,7 @@ export default function WorkCalendarApp({
               team={team}
               teams={teams}
               isMaster={isMaster}
+              signIn={signIn}
               accessToken={accessToken}
               onTeamsChanged={() => onSwitchTeam(team.id)}
             />
@@ -4908,6 +4912,7 @@ function SettingsView({
   team,
   teams,
   isMaster,
+  signIn,
   accessToken,
   onTeamsChanged,
 }: {
@@ -4927,11 +4932,19 @@ function SettingsView({
   team: Team;
   teams: Team[];
   isMaster: boolean;
+  signIn: { email: string; masterConfigured: number };
   accessToken: string;
   onTeamsChanged: () => void;
 }) {
   return (
     <div className="space-y-5">
+      <SignInCheck
+        email={signIn.email}
+        teamName={team.name}
+        role={roleLabel(actor)}
+        isMaster={isMaster}
+        masterConfigured={signIn.masterConfigured}
+      />
       {isMaster && (
         <TeamManagementPanel
           accessToken={accessToken}
@@ -4966,6 +4979,45 @@ function SettingsView({
         isMaster={isMaster}
       />
     </div>
+  );
+}
+
+/** 서버가 이 로그인을 어떻게 보고 있는지 보여 줍니다. 마스터 화면이 안 보일 때 원인을 바로 알 수 있습니다. */
+function SignInCheck({
+  email,
+  teamName,
+  role,
+  isMaster,
+  masterConfigured,
+}: {
+  email: string;
+  teamName: string;
+  role: string;
+  isMaster: boolean;
+  masterConfigured: number;
+}) {
+  const hint = isMaster
+    ? '마스터로 인식되었습니다. 왼쪽 맨 위 팀 선택에서 전체 팀을 볼 수 있습니다.'
+    : masterConfigured === 0
+      ? '서버에 마스터 이메일(MASTER_EMAILS)이 설정되어 있지 않습니다. Vercel 설정 후 다시 배포해 주세요.'
+      : `서버에 마스터 이메일이 ${masterConfigured}개 설정되어 있지만, 지금 로그인한 이메일은 그중에 없습니다.`;
+  return (
+    <section className="rounded-3xl border border-[#d8ded4] bg-[#fbfaf5] p-5">
+      <h3 className="font-black">로그인 확인</h3>
+      <dl className="mt-3 grid grid-cols-[110px_1fr] gap-y-1.5 text-sm">
+        <dt className="font-bold text-[#748078]">로그인 이메일</dt>
+        <dd className="break-all font-bold">{email}</dd>
+        <dt className="font-bold text-[#748078]">소속 · 권한</dt>
+        <dd>
+          {teamName} · {role}
+        </dd>
+        <dt className="font-bold text-[#748078]">마스터</dt>
+        <dd className={isMaster ? 'font-black text-[#2f6b4f]' : 'font-black text-[#a83f36]'}>
+          {isMaster ? '예' : '아니오'}
+        </dd>
+      </dl>
+      <p className="mt-3 rounded-xl bg-white px-3 py-2 text-xs text-[#5f6d64]">{hint}</p>
+    </section>
   );
 }
 

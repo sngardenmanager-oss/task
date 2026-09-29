@@ -46,13 +46,20 @@ export async function authenticateRequest(request: Request): Promise<User> {
   return data.user;
 }
 
-export function isMasterEmail(email: string) {
-  const normalizedEmail = email.trim().toLowerCase();
+function masterEmails() {
   return (process.env.MASTER_EMAILS ?? '')
     .split(',')
-    .map((candidate) => candidate.trim().toLowerCase())
-    .filter(Boolean)
-    .includes(normalizedEmail);
+    .map((candidate) => candidate.trim().replace(/^["']|["']$/g, '').trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function isMasterEmail(email: string) {
+  return masterEmails().includes(email.trim().toLowerCase());
+}
+
+/** 서버에 마스터 이메일이 몇 개 설정되어 있는지(값은 알리지 않음). 설정 화면의 로그인 확인용입니다. */
+export function masterEmailCount() {
+  return masterEmails().length;
 }
 
 export function requireWorkspaceMember(
