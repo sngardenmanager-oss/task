@@ -9,8 +9,7 @@ import { listCompanyEvents } from '@/lib/company-events-store';
 import { listTeams } from '@/lib/team-store';
 import {
   readAllWorkspaces,
-  readWorkspaceState,
-  writeWorkspaceState,
+  updateWorkspaceState,
 } from '@/lib/workspace-store';
 import type { OverviewTeam } from '@/lib/types';
 
@@ -74,28 +73,31 @@ export async function POST(request: Request) {
       (item) => item.id === body.teamId && item.active,
     );
     if (!team) throw new ApiError('팀을 찾을 수 없습니다.', 404);
-    const state = await readWorkspaceState(team.id);
-    const actor = requireWorkspaceMember(state, user.email!);
-    const task = state.tasks.find((item) => item.id === body.taskId);
-    if (!task) throw new ApiError('업무를 찾을 수 없습니다.', 404);
-    if (task.status !== 'completion_requested')
-      throw new ApiError('이미 처리된 완료 요청입니다.', 409);
-    const at = new Date().toISOString();
     const status = body.status;
-    state.tasks = state.tasks.map((item) =>
-      item.id === task.id
-        ? {
-            ...item,
-            status,
-            completedAt: status === 'completed' ? at : undefined,
-            statusHistory: [
-              ...(item.statusHistory ?? []),
-              { at, actorId: actor.id, from: item.status, to: status },
-            ],
-          }
-        : item,
-    );
-    await writeWorkspaceState(team.id, state);
+    await updateWorkspaceState(team.id, (state) => {
+      const actor = requireWorkspaceMember(state, user.email!);
+      const task = state.tasks.find((item) => item.id === body.taskId);
+      if (!task) throw new ApiError('업무를 찾을 수 없습니다.', 404);
+      if (task.status !== 'completion_requested')
+        throw new ApiError('이미 처리된 완료 요청입니다.', 409);
+      const at = new Date().toISOString();
+      return {
+        ...state,
+        tasks: state.tasks.map((item) =>
+          item.id === task.id
+            ? {
+                ...item,
+                status,
+                completedAt: status === 'completed' ? at : undefined,
+                statusHistory: [
+                  ...(item.statusHistory ?? []),
+                  { at, actorId: actor.id, from: item.status, to: status },
+                ],
+              }
+            : item,
+        ),
+      };
+    });
     return Response.json({ ok: true }, { headers });
   } catch (error) {
     return apiErrorResponse(error, '완료 요청을 처리하지 못했습니다.');

@@ -725,6 +725,8 @@ export default function WorkCalendarApp({
   const baseRef = useRef<WorkspaceState>(initialData);
   const savingRef = useRef(false);
   const saveAgainRef = useRef(false);
+  /** 서버에 아직 저장되지 않은 변경이 있는지. 화면을 떠날 때 확인에 씁니다. */
+  const unsavedRef = useRef(false);
   /** 저장 실패 상태. retry=true이면 30초마다·인터넷 재연결 때 자동으로 다시 저장합니다. */
   const [saveProblem, setSaveProblem] = useState<{
     message: string;
@@ -810,6 +812,7 @@ export default function WorkCalendarApp({
         skipSave.current = true;
         setData(result.state);
         forgetPending();
+        unsavedRef.current = deletedIdsRef.current.size > 0;
       } else {
         // 저장하는 사이에 또 바꾼 내용은 서버 최신 상태 위에 다시 얹어 이어서 저장합니다.
         setData(
@@ -889,13 +892,53 @@ export default function WorkCalendarApp({
     };
   }, [saveProblem]);
 
+  /** 창을 닫거나 새로고침할 때: 저장 안 된 변경분을 마지막으로 한 번 더 서버에 보냅니다(기기에도 이미 보관됨). */
+  const sendOnLeave = useEffectEvent(() => {
+    if (!unsavedRef.current) return;
+    try {
+      void fetch(withTeam('/api/state', team.id), {
+        method: 'PUT',
+        keepalive: true,
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          state: deltaAsState(diffWorkspace(baseRef.current, dataRef.current)),
+          deletedIds: [...deletedIdsRef.current],
+        }),
+      }).catch(() => undefined);
+    } catch {
+      // 너무 커서 보낼 수 없으면 기기에 보관된 변경분이 다음에 열 때 저장됩니다.
+    }
+  });
   useEffect(() => {
-    if (!saveProblem) return;
-    // 저장 안 된 변경이 있을 때 창을 닫으려 하면 한 번 확인합니다.
-    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    const onHide = () => sendOnLeave();
+    // 웹에서는 저장 안 된 변경이 있으면 닫기 전에 한 번 확인합니다.
+    // (윈도우 프로그램은 확인 창 없이 닫기가 막히므로 확인하지 않고, 마지막 전송과 기기 보관에 맡깁니다.)
+    const warn = (event: BeforeUnloadEvent) => {
+      if (unsavedRef.current && !window.snoopyDesktop) event.preventDefault();
+    };
+    window.addEventListener('pagehide', onHide);
     window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
-  }, [saveProblem]);
+    return () => {
+      window.removeEventListener('pagehide', onHide);
+      window.removeEventListener('beforeunload', warn);
+    };
+  }, []);
+
+  /** 팀 전환·로그아웃 전에 남은 변경을 먼저 저장합니다. 실패해도 변경분은 기기에 보관되어 다음에 다시 저장됩니다. */
+  async function saveBeforeLeaving() {
+    for (let attempt = 0; attempt < 4 && unsavedRef.current; attempt += 1) {
+      if (await flushRef.current()) break;
+      if (!savingRef.current) break;
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    }
+  }
+  const switchTeamSafely = (teamId: string) =>
+    void saveBeforeLeaving().then(() => onSwitchTeam(teamId));
+  const signOutSafely = () =>
+    void saveBeforeLeaving().then(() => onSignOut());
 
   useEffect(() => {
     const currentEntry = (): AppHistoryEntry => ({
@@ -977,9 +1020,23 @@ export default function WorkCalendarApp({
       skipSave.current = false;
       return;
     }
+    // 바뀌는 즉시 기기에 임시 보관합니다(0.5초 안에 창을 닫거나 팀을 바꿔도 남도록).
+    const delta = diffWorkspace(baseRef.current, data);
+    const deletedIds = [...deletedIdsRef.current];
+    if (!isEmptyDelta(delta) || deletedIds.length) {
+      unsavedRef.current = true;
+      try {
+        window.localStorage.setItem(
+          pendingKey,
+          JSON.stringify({ delta, deletedIds, at: new Date().toISOString() }),
+        );
+      } catch {
+        // 기기 저장소를 못 써도 서버 저장은 계속합니다.
+      }
+    }
     const timer = window.setTimeout(() => void flushRef.current(), 500);
     return () => window.clearTimeout(timer);
-  }, [data]);
+  }, [data, pendingKey]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1371,6 +1428,8 @@ export default function WorkCalendarApp({
 
   function deleteTaskComment(taskId: string, commentId: string) {
     if (!isAdmin) return;
+    // 댓글은 서버에서 합쳐지므로, 지운 댓글은 삭제 기록으로 알려야 다시 살아나지 않습니다.
+    deletedIdsRef.current.add(commentId);
     updateData(
       (current) => ({
         ...current,
@@ -2118,7 +2177,7 @@ export default function WorkCalendarApp({
         current={team.id}
         teams={teams}
         isMaster={isMaster}
-        onSwitch={onSwitchTeam}
+        onSwitch={switchTeamSafely}
       />
     ) : null;
 
@@ -2181,7 +2240,7 @@ export default function WorkCalendarApp({
             variant="outline"
             size="icon"
             className="rounded-full bg-white"
-            onClick={() => void onSignOut()}
+            onClick={signOutSafely}
           >
             <LogOut />
           </Button>
@@ -2398,7 +2457,7 @@ export default function WorkCalendarApp({
               isMaster={isMaster}
               signIn={signIn}
               accessToken={accessToken}
-              onTeamsChanged={() => onSwitchTeam(team.id)}
+              onTeamsChanged={() => switchTeamSafely(team.id)}
             />
           )}
           {view === 'notifications' && (
@@ -4604,7 +4663,8 @@ function NotesView({
                       {isAdmin && (
                         <button
                           type="button"
-                          onClick={() =>
+                          onClick={() => {
+                            markDeleted(item.id);
                             updateData(
                               (current) => ({
                                 ...current,
@@ -4620,8 +4680,8 @@ function NotesView({
                                 ),
                               }),
                               '피드백을 삭제했습니다.',
-                            )
-                          }
+                            );
+                          }}
                           className="text-xs font-bold text-[#a83f36]"
                         >
                           삭제

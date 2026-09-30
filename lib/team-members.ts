@@ -5,7 +5,7 @@ import {
   listTeams,
   upsertMembership,
 } from '@/lib/team-store';
-import { readWorkspaceState, writeWorkspaceState } from '@/lib/workspace-store';
+import { updateWorkspaceState } from '@/lib/workspace-store';
 import type { Member, Role } from '@/lib/types';
 
 /** 사람을 팀에 넣습니다. 소속 기준표와 그 팀 작업공간의 members를 함께 맞춥니다.
@@ -22,24 +22,29 @@ export async function placeMemberInTeam(
   );
   if (existingActive) throw new Error('이미 다른 팀에 소속된 계정입니다.');
 
-  const state = await readWorkspaceState(teamId);
-  const previous = state.members.find(
-    (item) => normalizeEmail(item.email) === email,
-  );
-  const member: Member = previous
-    ? { ...previous, role: person.role, team: team.name, active: true }
-    : {
-        id: person.memberId,
-        name: person.name,
-        email,
-        role: person.role,
-        team: team.name,
-        active: true,
-      };
-  state.members = previous
-    ? state.members.map((item) => (item.id === previous.id ? member : item))
-    : [...state.members, member];
-
+  let member!: Member;
+  await updateWorkspaceState(teamId, (state) => {
+    const previous = state.members.find(
+      (item) => normalizeEmail(item.email) === email,
+    );
+    member = previous
+      ? { ...previous, role: person.role, team: team.name, active: true }
+      : {
+          id: person.memberId,
+          name: person.name,
+          email,
+          role: person.role,
+          team: team.name,
+          active: true,
+        };
+    const placed = member;
+    return {
+      ...state,
+      members: previous
+        ? state.members.map((item) => (item.id === previous.id ? placed : item))
+        : [...state.members, placed],
+    };
+  });
   await upsertMembership({
     teamId,
     email,
@@ -47,7 +52,6 @@ export async function placeMemberInTeam(
     role: member.role,
     active: true,
   });
-  await writeWorkspaceState(teamId, state);
   return member;
 }
 
@@ -55,36 +59,37 @@ export async function placeMemberInTeam(
  * 미완료 업무·루틴은 그 팀의 다른 관리자에게 넘깁니다. */
 export async function removeMemberFromTeam(teamId: string, email: string) {
   const normalized = normalizeEmail(email);
-  const state = await readWorkspaceState(teamId);
-  const target = state.members.find(
-    (item) => normalizeEmail(item.email) === normalized,
-  );
-  if (target) {
-    const heir = state.members.find(
-      (item) => item.active && item.role === 'admin' && item.id !== target.id,
+  const { after: state } = await updateWorkspaceState(teamId, (state) => {
+    const target = state.members.find(
+      (item) => normalizeEmail(item.email) === normalized,
     );
-    state.members = state.members.map((item) =>
-      item.id === target.id ? { ...item, active: false } : item,
-    );
-    if (heir) {
-      state.tasks = state.tasks.map((task) => {
-        const collaborators = task.collaborators.filter(
-          (id) => id !== target.id,
-        );
-        if (task.assigneeId === target.id && task.status !== 'completed')
-          return { ...task, assigneeId: heir.id, collaborators };
-        return collaborators.length === task.collaborators.length
-          ? task
-          : { ...task, collaborators };
-      });
-      state.routines = state.routines.map((routine) =>
-        routine.assigneeId === target.id
-          ? { ...routine, assigneeId: heir.id }
-          : routine,
+    if (target) {
+      const heir = state.members.find(
+        (item) => item.active && item.role === 'admin' && item.id !== target.id,
       );
+      state.members = state.members.map((item) =>
+        item.id === target.id ? { ...item, active: false } : item,
+      );
+      if (heir) {
+        state.tasks = state.tasks.map((task) => {
+          const collaborators = task.collaborators.filter(
+            (id) => id !== target.id,
+          );
+          if (task.assigneeId === target.id && task.status !== 'completed')
+            return { ...task, assigneeId: heir.id, collaborators };
+          return collaborators.length === task.collaborators.length
+            ? task
+            : { ...task, collaborators };
+        });
+        state.routines = state.routines.map((routine) =>
+          routine.assigneeId === target.id
+            ? { ...routine, assigneeId: heir.id }
+            : routine,
+        );
+      }
     }
-    await writeWorkspaceState(teamId, state);
-  }
+    return state;
+  });
   await deleteMembership(teamId, normalized);
   return state;
 }

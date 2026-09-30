@@ -15,7 +15,11 @@ import {
   updateTeam,
   upsertMembership,
 } from '@/lib/team-store';
-import { readAllWorkspaces, readWorkspaceState, writeWorkspaceState } from '@/lib/workspace-store';
+import {
+  readAllWorkspaces,
+  readWorkspaceState,
+  updateWorkspaceState,
+} from '@/lib/workspace-store';
 import type { Role, TeamDirectoryEntry } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -151,11 +155,12 @@ export async function POST(request: Request) {
         throw new ApiError('사람, 팀, 권한을 확인해 주세요.', 400);
       const membership = (await listMemberships({ teamId: body.teamId, email }))[0];
       if (!membership?.active) throw new ApiError('그 팀에 소속된 사람이 아닙니다.', 404);
-      const state = await readWorkspaceState(body.teamId);
-      state.members = state.members.map((item) =>
-        normalizeEmail(item.email) === email ? { ...item, role } : item,
-      );
-      await writeWorkspaceState(body.teamId, state);
+      await updateWorkspaceState(body.teamId, (state) => ({
+        ...state,
+        members: state.members.map((item) =>
+          normalizeEmail(item.email) === email ? { ...item, role } : item,
+        ),
+      }));
       await upsertMembership({ ...membership, role });
       return Response.json(await directory(), { headers });
     }

@@ -1,7 +1,7 @@
 import { createClient, type User } from '@supabase/supabase-js';
 import { resolveTeamAccess, TeamAccessError } from '@/lib/team-access';
 import { listMemberships, listTeams } from '@/lib/team-store';
-import { readWorkspaceState } from '@/lib/workspace-store';
+import { readWorkspaceRow } from '@/lib/workspace-store';
 import type { Member, Team, WorkspaceState } from '@/lib/types';
 
 export class ApiError extends Error {
@@ -108,6 +108,8 @@ export type TeamContext = {
   /** 이 사람이 들어갈 수 있는 팀. 마스터는 모든 활성 팀, 그 밖에는 자기 팀 하나입니다. */
   teams: Team[];
   state: WorkspaceState;
+  /** 읽은 시점의 행 버전. 저장할 때 동시 저장 확인에 씁니다. */
+  version: string | null;
   actor: Member;
   isMaster: boolean;
 };
@@ -137,12 +139,13 @@ export async function requireTeamAccess(
       throw new ApiError(error.message, error.status, error.code);
     throw error;
   }
-  const state = await readWorkspaceState(resolved.team.id);
+  const { state, version } = await readWorkspaceRow(resolved.team.id);
   const actor = requireWorkspaceMember(state, email);
   return {
     team: resolved.team,
     teams: resolved.accessibleTeams,
     state,
+    version,
     actor,
     isMaster,
   };
