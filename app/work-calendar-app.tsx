@@ -277,8 +277,21 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+/** 지연: 날짜가 지났는데 아직 시작하지 않은(예정) 업무. 진행 중·완료 요청은 지연으로 보지 않습니다. */
 function isTaskOverdue(task: Task) {
-  return task.status !== 'completed' && (task.endDate ?? task.date) < isoDate();
+  return task.status === 'scheduled' && (task.endDate ?? task.date) < isoDate();
+}
+
+/** 기간 초과: 진행 중이지만 종료일이 지난 업무. 미룬 것이 아니라 하는 중이라 지연과 구분합니다. */
+function isTaskOverrun(task: Task) {
+  return (
+    task.status === 'in_progress' && (task.endDate ?? task.date) < isoDate()
+  );
+}
+
+/** 선행 업무로서 끝난 것으로 보는 상태(완료 요청은 관리자 승인 대기). */
+function isTaskDoneOrRequested(task: Task) {
+  return task.status === 'completed' || task.status === 'completion_requested';
 }
 
 /** 메인 일정 아래 하위 일정을 날짜순으로 반환합니다. */
@@ -349,7 +362,7 @@ function linkedTasksOf(tasks: Task[], task: Task) {
 
 function pendingPrerequisites(tasks: Task[], task: Task) {
   return linkedTasksOf(tasks, task).before.filter(
-    ({ task: item }) => item.status !== 'completed',
+    ({ task: item }) => !isTaskDoneOrRequested(item),
   );
 }
 
@@ -383,6 +396,7 @@ function taskBarBackground(task: Task, categoryColor?: string) {
     return '#1d4ed8';
   }
   if (isTaskOverdue(task)) return '#dc2626';
+  if (isTaskOverrun(task)) return '#ea8a1f';
   return categoryColor ?? '#9aa49d';
 }
 
@@ -1187,7 +1201,7 @@ export default function WorkCalendarApp({
       }
       if (!isTaskVisibleTo(task, actor, isMaster)) continue;
       if (task.status !== 'completed') {
-        if (endDate < today) {
+        if (endDate < today && task.status !== 'completion_requested') {
           nextOverdue.push(task);
         } else {
           nextTodayTasks.push(task);
@@ -2841,7 +2855,9 @@ function TaskTitleText({ task, tasks }: { task: Task; tasks?: Task[] }) {
     ? 'text-[#1d4ed8]'
     : overdueFlag
       ? 'text-[#c0392b]'
-      : '';
+      : isTaskOverrun(task)
+        ? 'text-[#b8650d]'
+        : '';
   const tag = tasks ? projectTag(tasks, task) : '';
   return (
     <span className={colorClass}>
@@ -2877,7 +2893,7 @@ function TaskCard({
   const children = childTasksOf(data.tasks, task.id);
   const progress = projectProgress(children);
   const locked =
-    task.status !== 'completed' &&
+    !isTaskDoneOrRequested(task) &&
     pendingPrerequisites(data.tasks, task).length > 0;
   return (
     <button
@@ -7870,6 +7886,11 @@ function TaskDetail({
               지연
             </span>
           )}
+          {isTaskOverrun(task) && (
+            <span className="rounded-full bg-[#fdeccf] px-2 py-1 text-xs font-bold text-[#b8650d]">
+              진행 중 · 기간 초과
+            </span>
+          )}
           {task.endDate && (
             <span className="rounded-full bg-[#fff1dd] px-2 py-1 text-xs font-bold text-[#806743]">
               {dday(task.endDate)}
@@ -8138,7 +8159,7 @@ function SubtaskSection({
             return (
               <div
                 key={task.id}
-                className={`flex items-center gap-2 rounded-xl p-2 text-sm ${overdueFlag ? 'bg-[#fdecea]' : 'bg-[#f1f2ed]'}`}
+                className={`flex items-center gap-2 rounded-xl p-2 text-sm ${overdueFlag ? 'bg-[#fdecea]' : isTaskOverrun(task) ? 'bg-[#fdf3e3]' : 'bg-[#f1f2ed]'}`}
               >
                 <input
                   type="checkbox"
@@ -8169,7 +8190,11 @@ function SubtaskSection({
                   {assignee?.name ?? '미배정'}
                 </span>
                 <span className="shrink-0 text-[11px] font-bold text-[#5f6d64]">
-                  {overdueFlag ? '지연' : statusLabel[task.status]}
+                  {overdueFlag
+                    ? '지연'
+                    : isTaskOverrun(task)
+                      ? '진행 중 · 기간 초과'
+                      : statusLabel[task.status]}
                 </span>
               </div>
             );
@@ -8298,7 +8323,7 @@ function LinkedTasksSection({
                       key={linkId}
                       className="flex items-center gap-2 rounded-xl bg-[#f1f2ed] p-2 text-sm"
                     >
-                      {label === '먼저 할 일' && item.status !== 'completed' && (
+                      {label === '먼저 할 일' && !isTaskDoneOrRequested(item) && (
                         <Lock className="size-3.5 shrink-0 text-[#a0762c]" />
                       )}
                       <button
