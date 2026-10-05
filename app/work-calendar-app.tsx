@@ -52,6 +52,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import ReportsView from '@/app/reports-view';
+import TaskRecordPanel from '@/app/task-record-panel';
 import {
   CurrentTeamContext,
   useCurrentTeam,
@@ -1370,6 +1371,12 @@ export default function WorkCalendarApp({
       return setToast('최종 완료는 관리자만 처리할 수 있습니다.');
     const tasks = dataRef.current.tasks;
     const target = tasks.find((task) => task.id === taskId);
+    let changeNote = target?.changeNote;
+    if (target && target.status !== status && ['completed', 'completion_requested'].includes(target.status) && !['completed','completion_requested'].includes(status)) {
+      const reason = window.prompt('완료 반려 또는 업무 재개 사유를 입력해 주세요.');
+      if (!reason?.trim()) return;
+      changeNote = reason.trim();
+    }
     if (target && target.status !== status) {
       // 결정 사항: 하위 미완료·선행 미완료는 막지 않고 경고만 한다.
       if (status === 'completed' || status === 'completion_requested') {
@@ -1399,7 +1406,7 @@ export default function WorkCalendarApp({
       (current) => ({
         ...current,
         tasks: current.tasks.map((task) =>
-          task.id === taskId ? { ...task, status, completedAt: status === 'completed' ? new Date().toISOString() : undefined, statusHistory: task.status === status ? task.statusHistory : [...(task.statusHistory ?? []), { at: new Date().toISOString(), actorId: actor.id, from: task.status, to: status }] } : task,
+          task.id === taskId ? { ...task, status, changeNote, completedAt: status === 'completed' ? new Date().toISOString() : undefined, statusHistory: task.status === status ? task.statusHistory : [...(task.statusHistory ?? []), { at: new Date().toISOString(), actorId: actor.id, from: task.status, to: status }] } : task,
         ),
       }),
       status === 'completed'
@@ -1531,6 +1538,8 @@ export default function WorkCalendarApp({
 
   function removeTaskLink(ownerId: string, linkId: string) {
     if (!canEdit) return setToast('댓글 사용자는 연결을 해제할 수 없습니다.');
+    const reason = window.prompt('업무 연결을 해제하는 사유를 입력해 주세요.');
+    if (!reason?.trim()) return;
     const removedAt = new Date().toISOString();
     updateData(
       (current) => ({
@@ -1542,6 +1551,7 @@ export default function WorkCalendarApp({
                 links: (task.links ?? []).map((link) =>
                   link.id === linkId ? { ...link, removedAt } : link,
                 ),
+                changeNote: reason.trim(),
               }
             : task,
         ),
@@ -1603,6 +1613,11 @@ export default function WorkCalendarApp({
     const previous = dataRef.current.tasks.find(
       (task) => task.id === updatedTask.id,
     );
+    if (previous && (previous.assigneeId !== updatedTask.assigneeId || previous.date !== updatedTask.date || previous.endDate !== updatedTask.endDate || previous.parentId !== updatedTask.parentId)) {
+      const reason = window.prompt('담당자·일정·메인 업무 변경 사유를 입력해 주세요.');
+      if (!reason?.trim()) return;
+      updatedTask = { ...updatedTask, changeNote: reason.trim() };
+    }
     const delta = previous ? dayDifference(previous.date, updatedTask.date) : 0;
     const movable =
       previous && delta !== 0
@@ -1628,6 +1643,7 @@ export default function WorkCalendarApp({
               ...task,
               date: shiftIsoDate(task.date, delta),
               endDate: task.endDate ? shiftIsoDate(task.endDate, delta) : undefined,
+              changeNote: updatedTask.changeNote,
             };
           }
           // 옮기지 않은 하위 일정은 날짜가 그대로이므로 D-day 기준 일수를 새 D-day에 맞춰 다시 계산한다.
@@ -2591,6 +2607,7 @@ export default function WorkCalendarApp({
       {modal === 'detail' && selectedTask && (
         <TaskDetail
           key={selectedTask.id}
+          accessToken={accessToken}
           task={selectedTask}
           data={data}
           canEdit={canEdit}
@@ -7795,6 +7812,7 @@ function MemberForm({
 }
 
 function TaskDetail({
+  accessToken,
   task,
   data,
   canEdit,
@@ -7814,6 +7832,7 @@ function TaskDetail({
   applyTemplate,
   saveTemplate,
 }: {
+  accessToken: string;
   task: Task;
   data: WorkspaceState;
   canEdit: boolean;
@@ -7950,6 +7969,7 @@ function TaskDetail({
           addLink={addLink}
           removeLink={removeLink}
         />
+        <TaskRecordPanel task={task} data={data} accessToken={accessToken} canRead={canEdit} openTask={openTask} />
         <section>
           <h3 className="mb-2 text-sm font-black">
             댓글 {task.comments.length}

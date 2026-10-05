@@ -73,7 +73,7 @@ export async function updateWorkspaceState(
   teamId: string,
   mutate: (state: WorkspaceState) => WorkspaceState | Promise<WorkspaceState>,
   /** 이미 읽어 둔 행이 있으면 첫 시도에 다시 읽지 않고 씁니다(전송량 절약). */
-  initial?: { state: WorkspaceState; version: string | null },
+  initial?: { state: WorkspaceState; version: string | null; audit?: { id: string; name: string; role: string; note?: string } },
   attempts = 6,
 ): Promise<{ before: WorkspaceState; after: WorkspaceState; persisted: boolean }> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -90,7 +90,7 @@ export async function updateWorkspaceState(
     ).toISOString();
     let query = getSupabaseAdmin()
       .from('workspace_state')
-      .update({ payload: after, updated_at: next })
+      .update({ payload: after, updated_at: next, ...(initial?.audit ? { audit_context: { ...initial.audit, requestId: crypto.randomUUID() } } : {}) })
       .eq('team_id', teamId);
     if (version) query = query.eq('updated_at', version);
     const { data, error } = await query.select('team_id');

@@ -23,6 +23,8 @@ export type CombinedWeek = {
 };
 
 export type CombinedTeamReport = {
+  reportId?: string;
+  revision?: number;
   teamId: string;
   source: 'final' | 'draft' | 'auto';
   reportTitle?: string;

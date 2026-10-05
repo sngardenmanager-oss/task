@@ -115,7 +115,7 @@ export async function PUT(request: Request) {
           };
         });
         return merged;
-      }, { state, version });
+      }, { state, version, audit: { id: actor.id, name: actor.name, role: actor.role } });
     } catch (error) {
       if (error instanceof WorkspaceConflict) throw new ApiError(error.message, 503);
       throw error;

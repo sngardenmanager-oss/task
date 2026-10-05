@@ -597,7 +597,7 @@ const harness = {
   readWorkspaceState: async () => data,
   requestedTeam: () => null,
   recordMasterAlert: async () => {},
-  requireTeamAccess: async () => ({ actor: apiActor, team: { id: 'park' } }),
+  requireTeamAccess: async () => ({ actor: apiActor, team: { id: 'park' }, state: { ...data, members: [apiActor] } }),
   isSupabaseConfigured: () => true,
   getSupabaseAdmin: () => ({
     from: () => {
@@ -728,6 +728,8 @@ routeSource = routeSource.replace(
   "from '@/lib/report-share'",
   'from ' + JSON.stringify(shareUrl),
 );
+const workflowUrl = 'data:text/javascript;base64,' + Buffer.from(ts.transpileModule((await fs.readFile(new URL('../../lib/report-workflow.ts',import.meta.url),'utf8')).replace("from './reports'", 'from ' + JSON.stringify(coreUrl)), {compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText).toString('base64');
+routeSource = routeSource.replace("from '@/lib/report-workflow'", 'from ' + JSON.stringify(workflowUrl));
 const route = await import(
   'data:text/javascript;base64,' +
     Buffer.from(
@@ -762,11 +764,13 @@ await test('API merges saves into the team store and preserves finalized snapsho
   assert.equal((await put(0, store)).status, 200);
   // 팀 저장소는 버전이 달라도 거절하지 않고 병합한다.
   assert.equal((await put(0, store)).status, 200);
-  store = core.saveReport(store, core.finalizeReport(draft, []), actor);
-  const finalized = await put(1, store);
-  assert.equal(finalized.status, 200);
-  // 화면은 서버가 돌려준 저장소를 이어서 쓴다.
-  store = (await finalized.json()).store;
+  const bypass = core.saveReport(store, core.finalizeReport(draft, []), actor);
+  assert.equal((await put(1, bypass)).status, 409);
+  for (const action of ['submit', 'approve', 'finalize']) {
+    const result = await route.POST(new Request('http://local/api/reports', {method:'POST', body:JSON.stringify({reportId:draft.id, action, requestId:crypto.randomUUID(), expectedUpdatedAt:stored.payload.reports[0].updatedAt, reviewerId:actor.id, finalizerId:actor.id, note:'Self approval test exception'})}));
+    assert.equal(result.status,200,JSON.stringify(await result.clone().json()));
+    store=(await result.json()).store;
+  }
   stored.payload = JSON.parse(
     JSON.stringify(stored.payload, (_k, v) =>
       v && typeof v === 'object' && !Array.isArray(v)
@@ -1109,13 +1113,14 @@ await test('API persists Jeju data, validates history, rejects old-client loss a
   duplicate.jejuImports.at(-1).after.push(arrival('2026-09-15'));
   assert.equal((await put(1, duplicate)).status, 400);
   assert.equal(stored.payload.jejuArrivals.length, 1);
-  const r = core.finalizeReport(
-    core.newReport(data, actor, config, store),
-    [],
-    store.jejuArrivals,
-  );
+  const r = core.newReport(data, actor, config, store);
   store = core.saveReport(store, r, actor);
   assert.equal((await put(1, store)).status, 200);
+  for (const action of ['submit', 'approve', 'finalize']) {
+    const response = await route.POST(new Request('http://local/api/reports',{method:'POST',body:JSON.stringify({reportId:r.id,action,requestId:crypto.randomUUID(),expectedUpdatedAt:stored.payload.reports[0].updatedAt,reviewerId:actor.id,finalizerId:actor.id,note:'Self approval test exception'})}));
+    assert.equal(response.status,200);
+    store=(await response.json()).store;
+  }
   const altered = structuredClone(store);
   altered.reports[0].jejuArrivals[0].source = '변경';
   assert.equal((await put(2, altered)).status, 409);

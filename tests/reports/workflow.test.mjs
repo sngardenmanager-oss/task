@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import ts from 'typescript';
+const transpile=source=>'data:text/javascript;base64,'+Buffer.from(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText).toString('base64');
+const coreUrl=transpile(await fs.readFile(new URL('../../lib/reports.ts',import.meta.url),'utf8'));
+const core=await import(coreUrl);
+const workflow=await import(transpile((await fs.readFile(new URL('../../lib/report-workflow.ts',import.meta.url),'utf8')).replace("from './reports'",'from '+JSON.stringify(coreUrl))));
+const author={id:'author',name:'Author',role:'member',active:true,team:'Team',email:'a@test'};
+const reviewer={...author,id:'reviewer',name:'Reviewer'};
+const admin={...author,id:'admin',name:'Admin',role:'admin'};
+const state={members:[author,reviewer,admin],tasks:[],notes:[],routines:[],categories:[]};
+const store=core.emptyReportStore();
+const fresh=()=>core.newReport(state,author,{...core.defaultReportConfig(author,'2026-10-05'),scope:'team',team:'Team'},store);
+let n=0;
+function step(report,action,actor=author,extra={}){return workflow.transitionReport(report,{action,requestId:'request-'+(++n),expectedUpdatedAt:report.updatedAt,reviewerId:reviewer.id,finalizerId:admin.id,...extra},actor,state,store,new Date(1800000000000+n*1000).toISOString());}
+await test('submit freezes statistics and finalize preserves the reviewed snapshot',()=>{store.statistics=[{date:'2026-10-01',visitors:5}];let report=step(fresh(),'submit');const snapshot=structuredClone(report.statistics);store.statistics=[{date:'2026-10-01',visitors:99}];report=step(report,'approve',reviewer);report=step(report,'finalize',admin);assert.equal(report.status,'final');assert.deepEqual(report.statistics,snapshot);assert.equal(report.workflow.events.length,3);assert.equal(report.workflow.events[2].actorName,'Admin');});
+await test('only assigned reviewer and finalizer can transition',()=>{const report=step(fresh(),'submit');assert.throws(()=>step(report,'approve',author),/검토자/);assert.throws(()=>step(report,'finalize',admin),/검토 완료/);const approved=step(report,'approve',reviewer);assert.throws(()=>step(approved,'finalize',reviewer),/확정자/);});
+await test('return requires reason; resubmission increments and retains events',()=>{let report=step(fresh(),'submit');assert.throws(()=>step(report,'return',reviewer),/사유/);report=step(report,'return',reviewer,{note:'Evidence required'});assert.equal(workflow.reportLocked(report),false);report=step(report,'submit',author);assert.equal(report.workflow.submission,2);assert.equal(report.workflow.events.length,3);});
+await test('stale version fails; matching replay is idempotent',()=>{const report=fresh();const input={action:'submit',requestId:'repeat-request',expectedUpdatedAt:report.updatedAt,reviewerId:reviewer.id,finalizerId:admin.id};const result=workflow.transitionReport(report,input,author,state,store);assert.equal(workflow.transitionReport(result,input,author,state,store),result);assert.throws(()=>workflow.transitionReport(result,{...input,action:'review',requestId:'different-request',expectedUpdatedAt:'stale'},reviewer,state,store),/변경/);});
+await test('withdraw keeps submitted events; final reports cannot reopen',()=>{let report=step(fresh(),'submit');assert.throws(()=>step(report,'withdraw',author),/사유/);report=step(report,'withdraw',author,{note:'Correction'});assert.equal(report.workflow.events.length,2);report=step(report,'submit');report=step(report,'approve',reviewer);report=step(report,'finalize',admin);assert.throws(()=>step(report,'withdraw',admin,{note:'Wrong'}),/정정본/);});
+await test('self finalization and corrections need explicit rationale',()=>{assert.throws(()=>step(fresh(),'submit',admin,{finalizerId:admin.id}),/예외/);const correction={...fresh(),originalId:'original'};assert.throws(()=>step(correction,'submit'),/정정 사유/);});
+await test('project snapshot counts only direct children and approved completions',()=>{const report=fresh();report.rows=[{id:'r',taskId:'parent'}];const tasks=[{id:'parent',title:'Project',date:'2026-10-05'},{id:'a',parentId:'parent',status:'completed',date:'2026-10-01'},{id:'b',parentId:'parent',status:'completion_requested',date:'2026-10-01'},{id:'other',status:'completed',date:'2026-10-01',links:[{taskId:'parent',kind:'related'}]}];const snapshots=workflow.projectSnapshots(report,{...state,tasks});assert.equal(snapshots.length,1);assert.equal(snapshots[0].total,2);assert.equal(snapshots[0].completed,1);assert.equal(snapshots[0].requested,1);});

@@ -9,9 +9,11 @@ import {
 } from 'react';
 import { useCurrentTeam, withTeam } from '@/app/team-context';
 import { byteLength, REQUEST_LIMIT_BYTES } from '@/lib/retention';
+import ReportWorkflowPanel from './report-workflow-panel';
+import { LongTermReports, ReportDecisions, RecordBrowser } from './report-records';
+import { reportLocked, workflowLabels, type WorkflowAction } from '@/lib/report-workflow';
 import {
   Archive,
-  CheckCircle2,
   Download,
   FileText,
   Plus,
@@ -97,7 +99,7 @@ function MetricCards({
   store: ReportStore;
 }) {
   const metrics =
-    report.status === 'final'
+    reportLocked(report)
       ? report.metrics
       : calculateMetrics(
           store.statistics,
@@ -212,7 +214,7 @@ export default function ReportsView({
   const [previewing, setPreviewing] = useState(false);
   const loading = useRef(false);
   const canEdit = actor.role !== 'commenter';
-  const readOnly = report?.status === 'final';
+  const readOnly = report ? reportLocked(report) : false;
   // 보고서 저장소는 팀마다 따로입니다.
   const teamId = useCurrentTeam()?.id;
   async function load() {
@@ -375,21 +377,45 @@ export default function ReportsView({
       });
     else edit({ config });
   }
-  async function save(final = false) {
+  async function save() {
     if (!report) return;
     const issue = reportValidation(report);
     if (issue) throw new Error(issue);
-    const document = final
-      ? finalizeReport(report, store.statistics, store.jejuArrivals ?? [])
-      : report;
+    const document = report;
     const next = saveReport(store, document, actor);
     const saved = await persist(next);
     // 다른 사람이 같은 초안에 저장한 체크·문구가 병합되어 돌아온다.
     setReport(saved.reports.find((r) => r.id === report.id)!);
     setDirty(false);
-    setMessage(
-      final ? '보고본을 확정하여 보관했습니다.' : '초안을 저장했습니다.',
-    );
+    setMessage('초안을 저장했습니다.');
+  }
+  async function workflowAction(action: WorkflowAction, reviewerId: string, finalizerId: string, note: string) {
+    if (!report || busy) return;
+    await run(async () => {
+      setBusy(true);
+      try {
+        const response = await fetch(withTeam('/api/reports', teamId), {
+          method: 'POST', headers: { authorization: 'Bearer ' + accessToken, 'content-type': 'application/json' },
+          body: JSON.stringify({ action, reportId: report.id, expectedUpdatedAt: report.updatedAt, requestId: crypto.randomUUID(), reviewerId, finalizerId, note }),
+        });
+        const body = await response.json() as { error?: string; store: ReportStore; version: number };
+        if (!response.ok) throw new Error(body.error ?? '보고 처리 실패');
+        setStore(body.store); setVersion(body.version);
+        setReport(body.store.reports.find((item: ReportDocument) => item.id === report.id) ?? null);
+        setDirty(false); setMessage('보고 처리와 이력을 저장했습니다.');
+      } finally { setBusy(false); }
+    });
+  }
+  function openRecordedReport(item: ReportDocument) {
+    if (!confirmLeave()) return;
+    setReport(structuredClone(item)); setDirty(false); setTab('weekly');
+  }
+  function reviseRecordedReport(item: ReportDocument) {
+    if (!confirmLeave()) return;
+    setReport({ ...structuredClone(item), id: reportId(), ownerId: actor.id, status: 'draft', originalId: item.originalId ?? item.id,
+      revision: Math.max(item.revision, ...store.reports.filter(r => (r.originalId ?? r.id) === (item.originalId ?? item.id)).map(r => r.revision)) + 1,
+      workflow: undefined, projects: undefined, finalizedAt: undefined, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    setDirty(true); setTab('weekly');
   }
   function confirmLeave() {
     return (
@@ -566,7 +592,7 @@ export default function ReportsView({
         b.revision - a.revision,
     );
   const effective = () =>
-    report.status === 'final'
+    reportLocked(report)
       ? report
       : finalizeReport(report, store.statistics, store.jejuArrivals ?? []);
   return (
@@ -580,7 +606,7 @@ export default function ReportsView({
               : report.config.team + ' 팀'}{' '}
             ·{' '}
             {readOnly
-              ? '확정본 · 수정 ' + report.revision
+              ? (report.workflow ? workflowLabels[report.workflow.status] : '확정본') + ' · 수정 ' + report.revision
               : dirty
                 ? '저장하지 않은 변경사항'
                 : '초안'}{' '}
@@ -602,6 +628,7 @@ export default function ReportsView({
             <Plus />
             다음 회차
           </Button>
+          {report.status === 'final' && <Button variant="outline" disabled={busy} onClick={() => reviseRecordedReport(report)}>정정본 작성</Button>}
           {!readOnly && (
             <Button disabled={busy} onClick={() => void run(() => save())}>
               <Save />
@@ -627,6 +654,13 @@ export default function ReportsView({
           {message}
         </output>
       )}
+      <label className="block text-sm font-medium text-[#43594b]">보고 목록과 검토함
+        <select className={input} value={store.reports.some(item => item.id === report.id) ? report.id : ''} onChange={event => { const item = store.reports.find(r => r.id === event.target.value); if(item) openRecordedReport(item); }}>
+          <option value="" disabled>보고서를 선택해 주세요</option>
+          {[...store.reports].sort((a,b) => b.updatedAt.localeCompare(a.updatedAt)).map(item => <option key={item.id} value={item.id}>{item.workflow ? workflowLabels[item.workflow.status] : item.status === 'final' ? '확정' : '작성 중'} · {item.config.meetingDate} · {item.config.title}{item.workflow?.reviewerId === actor.id && ['submitted','reviewing'].includes(item.workflow.status) ? ' · 내 검토 대기' : ''}</option>)}
+        </select>
+      </label>
+      <ReportWorkflowPanel key={report.id + (report.workflow?.submission ?? 0)} report={report} actor={actor} data={data} busy={busy} dirty={dirty} onAction={workflowAction} openTask={openTask} />
       <fieldset
         disabled={readOnly || busy}
         className={panel + ' grid gap-3 sm:grid-cols-2 xl:grid-cols-4'}
@@ -715,13 +749,13 @@ export default function ReportsView({
       </fieldset>
       <MetricCards report={report} store={store} />
       <DailyVisitorChart
-        rows={report.status === 'final' ? report.statistics : store.statistics}
+        rows={readOnly ? report.statistics : store.statistics}
         start={report.config.statsStart}
         end={report.config.statsEnd}
       />
-      <JejuReport report={report} store={store} />
+      <JejuReport report={report} store={readOnly ? { ...store, statistics: report.statistics, jejuArrivals: report.jejuArrivals } : store} />
       <RatioComposition
-        rows={report.status === 'final' ? report.statistics : store.statistics}
+        rows={readOnly ? report.statistics : store.statistics}
         start={report.config.statsStart}
         end={report.config.statsEnd}
       />
@@ -739,6 +773,7 @@ export default function ReportsView({
           <TabsTrigger className="min-h-10 px-3" value="archive">
             보고서 보관함
           </TabsTrigger>
+          <TabsTrigger className="min-h-10 px-3" value="records">보고·업무 기록</TabsTrigger>
         </TabsList>
         <TabsContent value="weekly" className="space-y-4 pt-3">
           <div className="flex flex-wrap items-center gap-3 text-sm">
@@ -1769,6 +1804,9 @@ export default function ReportsView({
                         ...structuredClone(item),
                         id: reportId(),
                         status: 'draft',
+                        ownerId: actor.id,
+                        workflow: undefined,
+                        projects: undefined,
                         originalId,
                         revision,
                         finalizedAt: undefined,
@@ -1801,7 +1839,12 @@ export default function ReportsView({
             </p>
           )}
         </TabsContent>
+        <TabsContent value="records" className="space-y-4 pt-3">
+          <LongTermReports accessToken={accessToken} onOpen={openRecordedReport} />
+          <RecordBrowser accessToken={accessToken} onOpenReport={openRecordedReport} openTask={openTask} />
+        </TabsContent>
       </Tabs>
+      {report.status === 'final' && <ReportDecisions key={report.id} report={report} accessToken={accessToken} actor={actor} data={data} openTask={openTask} onTask={task => updateData(current => ({ ...current, tasks: current.tasks.some(item => item.id === task.id) ? current.tasks : [...current.tasks, task] }), '결정에 연결된 후속 업무를 등록했습니다.')} />}
       {previewing && (
         <section className={panel}>
           <h3 className="font-bold">
@@ -1877,29 +1920,7 @@ export default function ReportsView({
           >
             PDF / 인쇄
           </Button>
-          {!readOnly && (
-            <Button
-              disabled={busy}
-              onClick={() =>
-                void run(async () => {
-                  setPreviewing(true);
-                  if (
-                    window.confirm(
-                      '표출 ' +
-                        included +
-                        '건, 제외 ' +
-                        (report.rows.length - included) +
-                        '건으로 확정할까요? 확정본은 수정본을 만들어 변경할 수 있습니다.',
-                    )
-                  )
-                    await save(true);
-                })
-              }
-            >
-              <CheckCircle2 />
-              보고본 확정·보관
-            </Button>
-          )}
+          {report.status !== 'final' && <p className="max-w-xs text-sm text-[#64776a]">상단에서 보고 제출 → 검토 완료 → 최종 확정 순서로 처리합니다.</p>}
         </div>
       </div>
       {readOnly && (

@@ -1,4 +1,5 @@
 'use client';
+import { reportLocked } from '@/lib/report-workflow';
 
 import { useMemo, useState } from 'react';
 import { Download, Upload } from 'lucide-react';
@@ -35,7 +36,7 @@ export function JejuReport({
   report: ReportDocument;
   store: ReportStore;
 }) {
-  const final = report.status === 'final';
+  const final = reportLocked(report);
   const summary = calculateJeju(
     final ? (report.jejuArrivals ?? []) : (store.jejuArrivals ?? []),
     final ? report.statistics : store.statistics,
@@ -137,7 +138,7 @@ export function JejuImportPanel({
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [working, setWorking] = useState(false);
-  const final = report.status === 'final';
+  const final = reportLocked(report);
   const disabled = final || busy || working;
   const preview = useMemo(
     () => (file ? previewJejuCsv(file.text, { source, asOf, status }) : null),

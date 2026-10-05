@@ -11,6 +11,7 @@ import type {
 import type { CompanyEvent, Team } from '@/lib/types';
 
 type Payload = {
+  fingerprint?: string;
   week: CombinedWeek;
   teams: Team[];
   reports: CombinedTeamReport[];
@@ -33,6 +34,8 @@ export default function CombinedReportView({ accessToken }: { accessToken: strin
   const [payload, setPayload] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [savedId, setSavedId] = useState('');
+  const [meetingArchive, setMeetingArchive] = useState<{id:string;meeting_date:string;recorded_at:string;note:string}[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -45,6 +48,7 @@ export default function CombinedReportView({ accessToken }: { accessToken: strin
       const result = (await response.json()) as Payload & { error?: string };
       if (!response.ok) throw new Error(result.error ?? '통합 보고서를 만들지 못했습니다.');
       setPayload(result);
+      setSavedId('');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '불러오지 못했습니다.');
     } finally {
@@ -58,6 +62,28 @@ export default function CombinedReportView({ accessToken }: { accessToken: strin
   }, [load]);
 
   const teamOf = (id: string) => payload?.teams.find((team) => team.id === id);
+  async function meetingAction(id?: string) {
+    if (!payload || loading) return;
+    setLoading(true); setError('');
+    try {
+      if (id) {
+        const response = await fetch('/api/overview/report?archive=1&id=' + encodeURIComponent(id), { headers: { authorization: `Bearer ${accessToken}` } });
+        const body = await response.json() as {error?:string;items:{id:string;payload:Payload}[]};
+        if (!response.ok || !body.items[0]) throw new Error(body.error ?? '회의본을 찾지 못했습니다.');
+        setPayload(body.items[0].payload); setSavedId(body.items[0].id);
+      } else {
+        const note = window.prompt('회의 확정 의견을 남겨 주세요. 미확정 팀이 있으면 예외 사유가 필요합니다.');
+        if (note === null) return;
+        const response = await fetch('/api/overview/report', { method:'POST', headers:{authorization:`Bearer ${accessToken}`,'content-type':'application/json'}, body: JSON.stringify({id:crypto.randomUUID(),meetingDate:payload.week.meetingDate,fingerprint:payload.fingerprint,note}) });
+        const body = await response.json() as {error?:string;item:{id:string;payload:Payload}};
+        if (!response.ok) throw new Error(body.error ?? '회의본 저장 실패');
+        setPayload(body.item.payload); setSavedId(body.item.id);
+      }
+    } catch(e) {setError(e instanceof Error ? e.message : '회의 기록 처리 실패');} finally {setLoading(false);}
+  }
+  async function listMeetings() {
+    try { const response=await fetch('/api/overview/report?archive=1',{headers:{authorization:`Bearer ${accessToken}`}});const body=await response.json() as {error?:string;items:typeof meetingArchive};if(!response.ok)throw new Error(body.error);setMeetingArchive(body.items); } catch(e){setError(e instanceof Error?e.message:'보관함 조회 실패');}
+  }
 
   async function exportExcel() {
     if (!payload) return;
@@ -71,6 +97,7 @@ export default function CombinedReportView({ accessToken }: { accessToken: strin
       `전주 실적 ${payload.week.actualStart} ~ ${payload.week.actualEnd} / 금주 계획 ${payload.week.planStart} ~ ${payload.week.planEnd}`,
     ]);
     summary.addRow([]);
+    summary.addRow(['회의본 번호', savedId || '미확정 취합 자료']);
     summary.addRow(['팀', '자료', '작성자', '전주 실적', '금주 계획', '지연 업무']).font = bold;
     for (const report of payload.reports)
       summary.addRow([
@@ -153,6 +180,11 @@ export default function CombinedReportView({ accessToken }: { accessToken: strin
           {error}
         </p>
       )}
+      <section className="space-y-3 rounded-2xl border border-[#d8ded4] bg-white p-4 print:hidden">
+        <p className="text-sm font-bold">{savedId ? `확정 회의본 · ${savedId}` : '현재 취합 자료 · 회의본을 확정하면 팀 보고 버전과 내용을 보존합니다.'}</p>
+        <div className="flex flex-wrap gap-2"><Button disabled={loading || !payload || !!savedId} onClick={() => void meetingAction()}>통합 회의본 확정</Button><Button variant="outline" onClick={() => void listMeetings()}>지난 회의본 보기</Button></div>
+        {meetingArchive.map(item => <button className="block text-left text-sm underline" key={item.id} onClick={() => void meetingAction(item.id)}>{item.meeting_date} · {new Date(item.recorded_at).toLocaleString('ko-KR')} {item.note ? '· ' + item.note : ''}</button>)}
+      </section>
       {!payload ? (
         <p className="flex items-center gap-2 text-sm text-[#748078]">
           <LoaderCircle className="size-4 animate-spin" /> 통합 보고서를 만드는 중입니다.
@@ -161,6 +193,7 @@ export default function CombinedReportView({ accessToken }: { accessToken: strin
         <article className="space-y-5 rounded-3xl border border-[#d8ded4] bg-white p-6 print:border-0 print:p-0">
           <header>
             <h2 className="text-2xl font-black">주간회의 전체 팀 통합 보고</h2>
+            <p className="break-all text-xs">회의본 번호: {savedId || '미확정 취합 자료'}</p>
             <p className="mt-1 text-sm text-[#5f6d64]">
               회의일 {payload.week.meetingDate} · 전주 실적{' '}
               {range(payload.week.actualStart, payload.week.actualEnd)} · 금주 계획{' '}

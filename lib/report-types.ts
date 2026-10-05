@@ -98,6 +98,8 @@ export type JejuArrivalImport = {
   pruned?: boolean;
 };
 export type ReportDocument = {
+  workflow?: import('./report-workflow').ReportWorkflow;
+  projects?: import('./report-workflow').ProjectSnapshot[];
   id: string;
   ownerId: string;
   config: ReportConfig;

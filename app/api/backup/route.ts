@@ -44,6 +44,26 @@ export async function GET(request: Request) {
     const user = await authenticateRequest(request);
     requireMaster(user.email!);
     const teamId = new URL(request.url).searchParams.get('team');
+    const params = new URL(request.url).searchParams;
+    const recordTable = params.get('recordTable');
+    if (recordTable) {
+      if (!['work_records','report_archive','work_decisions','meeting_records'].includes(recordTable)) throw new ApiError('지원하지 않는 백업 자료입니다.', 400);
+      if (recordTable !== 'meeting_records' && (!teamId || !(await listTeams()).some(team => team.id === teamId))) throw new ApiError('백업할 팀을 확인해 주세요.', 400);
+      const key = recordTable === 'report_archive' ? 'report_id' : 'id';
+      let query = getSupabaseAdmin().from(recordTable).select('*');
+      if (recordTable === 'report_archive') query = query.eq('owner_id', reportOwnerFor(teamId!));
+      else if (recordTable !== 'meeting_records') query = query.eq('team_id', teamId!);
+      if (params.get('after')) query = query.gt(key, params.get('after')!);
+      const { data, error } = await query.order(key).limit(20);
+      if (error) throw error;
+      const items: Record<string, unknown>[] = []; let bytes = 0;
+      for (const row of data ?? []) {
+        const size = Buffer.byteLength(JSON.stringify(row),'utf8');
+        if (items.length && bytes + size > 1_000_000) break;
+        items.push(row); bytes += size;
+      }
+      return Response.json({ items, next: items.length && (items.length < (data?.length ?? 0) || data?.length === 20) ? items[items.length-1][key] : null }, { headers });
+    }
     if (teamId) {
       const team = (await listTeams()).find((item) => item.id === teamId);
       if (!team) throw new ApiError('팀을 찾을 수 없습니다.', 404);
@@ -67,7 +87,7 @@ export async function GET(request: Request) {
       {
         lastBackupAt: lastBackup?.at ?? null,
         due: isBackupDue(new Date(), lastBackup?.at),
-        teams: teams.filter((team) => team.active),
+        teams,
         companyEvents,
         alerts,
         sizes: sizes.map((size) => ({
@@ -138,6 +158,7 @@ export async function POST(request: Request) {
             .update({
               version: row.version + 1,
               payload: removeReports(row.payload, ids),
+              audit_context: { id: user.id, name: user.email, requestId: crypto.randomUUID(), action: '백업 후 장기 보관' },
               updated_at: now.toISOString(),
             })
             .eq('owner_id', reportOwnerFor(team.id))

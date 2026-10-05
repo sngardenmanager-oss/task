@@ -213,6 +213,13 @@ export function reportTables(report: ReportDocument): ReportTable[] {
     stepsOf(r),
   ];
   const summary: [Cell, Cell, RowTone?][] = [
+    ['보고 번호', report.id],
+    ['보고 버전', `수정 ${report.revision} / 제출 ${report.workflow?.submission ?? '기록 없음'}`],
+    ['확정자', report.workflow?.events.findLast(event => event.action === 'finalize')?.actorName ?? '기존 기록 없음'],
+    ['확정 시각', report.finalizedAt ?? '미확정'],
+    ['양식 버전', report.templateVersion],
+    ...(report.projects ?? []).map((project): [Cell, Cell] => ['프로젝트 · ' + project.title, `D-day ${project.date} / 완료 ${project.completed}/${project.total} / 완료 요청 ${project.requested} / 기준일 지연 ${project.overdue}`]),
+    ...(report.workflow?.events ?? []).map((event): [Cell, Cell] => ['보고 처리 · ' + ({submit:'제출',review:'검토 시작',return:'보완 요청',approve:'검토 완료',finalize:'확정',withdraw:'철회'})[event.action], `${event.actorName} / ${event.at} / ${event.note}`]),
     ['제목', report.config.title],
     ['회의일', report.config.meetingDate],
     ['작성자', report.config.author],

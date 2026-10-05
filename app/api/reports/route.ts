@@ -9,7 +9,8 @@ import { getSupabaseAdmin, isSupabaseConfigured } from '@/lib/supabase-server';
 import { recordMasterAlert } from '@/lib/master-alerts';
 import { pruneImportHistory, REQUEST_LIMIT_BYTES } from '@/lib/retention';
 import { LEGACY_TEAM_ID, reportOwnerFor } from '@/lib/team-access';
-import { reportValidation, validateStatistic } from '@/lib/reports';
+import { reportValidation, validateStatistic, sameReportValue } from '@/lib/reports';
+import { reportLocked, transitionReport, WorkflowError, workflowActionLabels, type WorkflowInput } from '@/lib/report-workflow';
 import {
   migrateOwnerStores,
   mergeSharedStore,
@@ -24,7 +25,7 @@ export const dynamic = 'force-dynamic';
 const headers = { 'cache-control': 'private, no-store, max-age=0' };
 async function context(request: Request) {
   const user = await authenticateRequest(request);
-  const { actor, team } = await requireTeamAccess(
+  const { actor, team, state } = await requireTeamAccess(
     user.email!,
     requestedTeam(request),
   );
@@ -36,7 +37,7 @@ async function context(request: Request) {
     );
   if (!isSupabaseConfigured())
     throw new ApiError('보고서 서버 저장소가 설정되지 않았습니다.', 503);
-  return { actor, teamId: team.id };
+  return { actor, teamId: team.id, state };
 }
 function storeError(message: string): never {
   console.error('Reports storage:', message);
@@ -153,6 +154,17 @@ export async function PUT(request: Request) {
     const db = getSupabaseAdmin();
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const before = await readTeamStore(teamId);
+      for (const candidate of incoming.reports) {
+        if (input.bases?.reports && !(candidate.id in input.bases.reports)) continue;
+        const current = before.store.reports.find(report => report.id === candidate.id);
+        if (current && sameReportValue(current, candidate)) continue;
+        if (candidate.status === 'final' || (current && reportLocked(current)))
+          throw new ApiError('제출·확정된 보고서는 수정할 수 없습니다. 보완 요청 또는 정정본을 이용해 주세요.', 409);
+        if (!sameReportValue(candidate.workflow, current?.workflow))
+          throw new ApiError('보고 처리 이력은 공식 제출·검토 기능으로만 변경할 수 있습니다.', 403);
+        if (current && input.bases?.reports?.[candidate.id] && !sameReportValue(current, input.bases.reports[candidate.id]))
+          throw new ApiError('다른 사람이 이 보고서를 수정했습니다. 현재 내용을 복사해 둔 뒤 최신 보고서를 불러와 비교해 주세요.', 409);
+      }
       let store: ReportStore;
       try {
         // CSV·입도객 업로드는 최근 1건만 되돌리기 복사본을 남깁니다.
@@ -171,6 +183,7 @@ export async function PUT(request: Request) {
         .update({
           version,
           payload: store,
+          audit_context: { id: actor.id, name: actor.name, role: actor.role, requestId: crypto.randomUUID(), action: '보고 저장' },
           updated_at: new Date().toISOString(),
         })
         .eq('owner_id', reportOwnerFor(teamId))
@@ -192,4 +205,30 @@ export async function PUT(request: Request) {
       );
     return apiErrorResponse(error, '보고서를 저장하지 못했습니다.');
   }
+}
+
+/** Official transitions are server-authenticated and recorded atomically by the DB trigger. */
+export async function POST(request: Request) {
+  try {
+    const { actor, teamId, state } = await context(request);
+    const input = await request.json() as WorkflowInput & { reportId: string };
+    if (!input || typeof input.reportId !== 'string') throw new ApiError('보고서를 선택해 주세요.', 400);
+    const before = await readTeamStore(teamId);
+    const report = before.store.reports.find(item => item.id === input.reportId);
+    if (!report) throw new ApiError('보고서 초안을 먼저 저장해 주세요.', 404);
+    const members = state.members.some(member => member.id === actor.id) ? state.members : [...state.members, actor];
+    let next;
+    try { next = transitionReport(report, input, actor, { ...state, members }, before.store); }
+    catch (error) { if (error instanceof WorkflowError) throw new ApiError(error.message, error.status); throw error; }
+    if (next === report) return Response.json({ ...before }, { headers });
+    const store = { ...before.store, reports: before.store.reports.map(item => item.id === next.id ? next : item) };
+    const version = before.version + 1;
+    const { data, error } = await getSupabaseAdmin().from('weekly_report_state').update({
+      version, payload: store, updated_at: new Date().toISOString(),
+      audit_context: { id: actor.id, name: actor.name, role: actor.role, requestId: input.requestId, action: workflowActionLabels[input.action], note: input.note?.slice(0, 4000) ?? '' },
+    }).eq('owner_id', reportOwnerFor(teamId)).eq('version', before.version).select('version').maybeSingle();
+    if (error) storeError(error.message);
+    if (!data) throw new ApiError('다른 저장과 겹쳤습니다. 최신 보고서를 확인한 뒤 다시 처리해 주세요.', 409);
+    return Response.json({ version, store }, { headers });
+  } catch (error) { return apiErrorResponse(error, '보고 처리를 저장하지 못했습니다.'); }
 }

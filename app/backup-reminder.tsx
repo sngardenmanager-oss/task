@@ -19,7 +19,7 @@ type Status = {
   alerts: MasterAlert[];
   sizes: { kind: 'workspace' | 'report'; teamId: string | null; bytes: number }[];
 };
-type TeamBackup = { team: Team; workspace: WorkspaceState; reportStore: ReportStore | null };
+type TeamBackup = { team: Team; workspace: WorkspaceState; reportStore: ReportStore | null; records?: Record<string, unknown[]> };
 type Step =
   | { kind: 'idle' }
   | { kind: 'working'; label: string }
@@ -94,10 +94,25 @@ export default function BackupReminder({
     try {
       const teams = status?.teams.length ? status.teams : knownTeams;
       const backups: TeamBackup[] = [];
+      async function collectRecords(table: string, team?: string) {
+        const records: unknown[] = []; let cursor: string | null = '';
+        do {
+          const params = new URLSearchParams({ recordTable: table });
+          if (team) params.set('team', team);
+          if (cursor) params.set('after', cursor);
+          const page = await call<{items: unknown[]; next: string | null}>('/api/backup?' + params);
+          records.push(...page.items); cursor = page.next;
+        } while (cursor);
+        return records;
+      }
       for (const [index, team] of teams.entries()) {
         setStep({ kind: 'working', label: `${team.name} 자료 받는 중 (${index + 1}/${teams.length})` });
-        backups.push(await call<TeamBackup>(`/api/backup?team=${encodeURIComponent(team.id)}`));
+        const backup = await call<TeamBackup>(`/api/backup?team=${encodeURIComponent(team.id)}`);
+        backup.records = {};
+        for (const table of ['work_records','report_archive','work_decisions']) backup.records[table] = await collectRecords(table, team.id);
+        backups.push(backup);
       }
+      const meetingRecords = await collectRecords('meeting_records');
       setStep({ kind: 'working', label: '백업 파일 만드는 중' });
       const stamp = startedAt.slice(0, 10);
       await downloadWorkbook(`스누피가든_전체업무_백업_${stamp}.xlsx`, (book) =>
@@ -109,7 +124,7 @@ export default function BackupReminder({
       download(
         `스누피가든_복원용_${stamp}.json`,
         new Blob(
-          [JSON.stringify({ exportedAt: startedAt, teams: backups, companyEvents: status?.companyEvents ?? [] })],
+          [JSON.stringify({ schemaVersion: 2, exportedAt: startedAt, teams: backups, meetingRecords, companyEvents: status?.companyEvents ?? [] })],
           { type: 'application/json' },
         ),
       );

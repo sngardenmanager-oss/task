@@ -114,6 +114,7 @@ export type TaskLink = {
 };
 
 export type Task = {
+  changeNote?: string;
   id: string;
   title: string;
   description: string;
