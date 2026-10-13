@@ -1,10 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { withTeam, useCurrentTeam } from '@/app/team-context';
+import { PLANNER_URL } from '@/lib/planner-link';
 
 /** 경영플래너가 계산한 요약 (경영플래너 lib/engine/index.ts PlannerSummary와 같은 모양) */
-type PlannerSummary = {
+export type PlannerSummary = {
   updatedAt: string;
   fy: number;
   asOf: string | null;
@@ -25,28 +24,12 @@ const man = (v: number | null | undefined) => (v === null || v === undefined ? '
 const tone: Record<Status, string> = { good: 'text-[#2e7d4f]', warn: 'text-[#b7791f]', bad: 'text-[#c0392b]', none: 'text-[#657269]' };
 const word: Record<Status, string> = { good: '양호', warn: '주의', bad: '위험', none: '' };
 
-export function usePlannerSummary(accessToken: string) {
-  const teamId = useCurrentTeam()?.id;
-  const [state, setState] = useState<{ summary: PlannerSummary | null; plannerUrl: string | null } | null>(null);
-  useEffect(() => {
-    let alive = true;
-    fetch(withTeam('/api/planner-summary', teamId), { headers: { authorization: `Bearer ${accessToken}` }, cache: 'no-store' })
-      .then((r) => (r.ok ? (r.json() as Promise<{ summary: PlannerSummary | null; plannerUrl: string | null }>) : null))
-      .then((body) => alive && setState(body))
-      .catch(() => alive && setState(null));
-    return () => {
-      alive = false;
-    };
-  }, [accessToken, teamId]);
-  return state;
-}
-
 /** 주간보고 '경영지표' 아래 '목표 대비 현황' 블록, 마스터 관제 카드에 함께 씁니다. */
-export function PlannerStatus({ accessToken, compact = false }: { accessToken: string; compact?: boolean }) {
-  const state = usePlannerSummary(accessToken);
-  const s = state?.summary;
+/** 요약은 /api/reports·/api/overview 응답에 함께 옵니다(파크사업팀·마스터만). 없으면 아무것도 그리지 않습니다. */
+export function PlannerStatus({ summary, compact = false }: { summary: PlannerSummary | null | undefined; compact?: boolean }) {
+  const s = summary;
   if (!s) return null;
-  const link = state?.plannerUrl;
+  const link = PLANNER_URL;
   return (
     <section className="rounded-3xl border border-[#d8ded4] bg-white p-5">
       <div className="mb-3 flex flex-wrap items-baseline gap-2">

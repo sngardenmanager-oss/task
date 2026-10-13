@@ -1,6 +1,7 @@
 import { getSupabaseAdmin } from '@/lib/supabase-server';
 import { sameReportValue, validateStatistic } from '@/lib/reports';
 import { validateJejuArrival } from '@/lib/jeju-arrivals';
+import { PLANNER_TEAM_ID, PLANNER_URL as LINK_URL } from '@/lib/planner-link';
 import type { JejuArrival, ReportStore, Statistic } from '@/lib/report-types';
 
 /**
@@ -12,10 +13,13 @@ import type { JejuArrival, ReportStore, Statistic } from '@/lib/report-types';
  * 회사 실적은 한 벌이므로 PLANNER_TEAM_ID(기본 park = 파크사업팀) 팀 저장소만 연결합니다.
  */
 
-export const plannerTeamId = () => process.env.PLANNER_TEAM_ID ?? 'park';
+export const plannerTeamId = () => process.env.PLANNER_TEAM_ID ?? PLANNER_TEAM_ID;
 
-/** 경영플래너 주소. 환경변수가 없으면 배포 주소를 씁니다. */
-export const PLANNER_URL = process.env.NEXT_PUBLIC_PLANNER_URL || 'https://snoopy-planner.vercel.app';
+/** 경영플래너 주소 */
+export const PLANNER_URL = LINK_URL;
+
+/** 보고서가 쓰는 기간(이번·지난 회계연도 비교)만 공용 실적에서 맞춥니다. 그 전 날짜는 보고서 자료 그대로 둡니다. */
+const MERGE_DAYS = 800;
 
 type DailyRow = { dataset: 'metrics' | 'arrivals'; date: string; payload: Record<string, unknown>; updated_at?: string };
 
@@ -63,22 +67,31 @@ export async function mirrorToPlanner(before: ReportStore, after: ReportStore) {
   }
 }
 
-async function readPlannerDaily(): Promise<DailyRow[] | null> {
+async function readPlannerDaily(from: string): Promise<DailyRow[] | null> {
   const db = getSupabaseAdmin();
-  const out: DailyRow[] = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await db
-      .from('planner_daily')
-      .select('dataset,date,payload,updated_at')
-      .in('dataset', ['metrics', 'arrivals'])
-      .order('date')
-      .range(from, from + 999);
-    if (missingTable(error)) return null;
-    if (error) throw new Error(error.message);
-    out.push(...((data ?? []) as DailyRow[]));
-    if (!data || data.length < 1000) break;
-  }
-  return out;
+  const { count, error: countError } = await db
+    .from('planner_daily')
+    .select('date', { count: 'exact', head: true })
+    .in('dataset', ['metrics', 'arrivals'])
+    .gte('date', from);
+  if (missingTable(countError)) return null;
+  if (countError) throw new Error(countError.message);
+  // 1,000행씩 나눈 쪽들을 동시에 읽습니다.
+  const pages = await Promise.all(
+    Array.from({ length: Math.ceil((count ?? 0) / 1000) }, async (_, i) => {
+      const { data, error } = await db
+        .from('planner_daily')
+        .select('dataset,date,payload,updated_at')
+        .in('dataset', ['metrics', 'arrivals'])
+        .gte('date', from)
+        .order('dataset')
+        .order('date')
+        .range(i * 1000, i * 1000 + 999);
+      if (error) throw new Error(error.message);
+      return (data ?? []) as DailyRow[];
+    }),
+  );
+  return pages.flat();
 }
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -86,7 +99,8 @@ const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : n
 /** 보고서를 불러올 때 공용 실적 값으로 맞춥니다(공용 테이블이 원천). 저장하지는 않습니다. */
 export async function mergeFromPlanner(store: ReportStore): Promise<ReportStore> {
   try {
-    const rows = await readPlannerDaily();
+    const from = new Date(Date.now() - MERGE_DAYS * 86400000).toISOString().slice(0, 10);
+    const rows = await readPlannerDaily(from);
     if (!rows?.length) return store;
     const stats = new Map(store.statistics.map((row) => [row.date, row]));
     const jeju = new Map((store.jejuArrivals ?? []).map((row) => [row.date, row]));

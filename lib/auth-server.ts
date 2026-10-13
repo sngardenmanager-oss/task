@@ -24,22 +24,44 @@ function publicSupabaseConfig() {
   return { url, key };
 }
 
-export async function authenticateRequest(request: Request): Promise<User> {
-  const authorization = request.headers.get('authorization');
-  const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
-  if (!token) throw new ApiError('로그인이 필요합니다.', 401);
+let authClient: ReturnType<typeof createClient> | null = null;
 
+/** 요청마다 새로 만들지 않아야 서명 확인용 공개키(JWKS)를 다시 받지 않습니다. */
+function getAuthClient() {
+  if (authClient) return authClient;
   const { url, key } = publicSupabaseConfig();
   if (!url || !key)
     throw new ApiError('로그인 서비스가 설정되지 않았습니다.', 503);
-
-  const supabase = createClient(url, key, {
+  authClient = createClient(url, key, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
       detectSessionInUrl: false,
     },
   });
+  return authClient;
+}
+
+/** 토큰 서명을 서버에서 직접 확인합니다(Supabase에 묻지 않음). 확인할 수 없는 토큰은 예전처럼 Supabase에 묻습니다. */
+export async function authenticateRequest(request: Request): Promise<User> {
+  const authorization = request.headers.get('authorization');
+  const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!token) throw new ApiError('로그인이 필요합니다.', 401);
+
+  const supabase = getAuthClient();
+  const verified = await supabase.auth.getClaims(token).catch(() => null);
+  const claims = verified?.data?.claims;
+  if (!verified?.error && claims?.sub && typeof claims.email === 'string' && claims.email) {
+    // 이 프로그램은 id와 email만 씁니다.
+    return {
+      id: claims.sub,
+      email: claims.email,
+      aud: String(claims.aud ?? 'authenticated'),
+      app_metadata: claims.app_metadata ?? {},
+      user_metadata: claims.user_metadata ?? {},
+      created_at: '',
+    } as User;
+  }
   const { data, error } = await supabase.auth.getUser(token);
   if (error || !data.user?.email)
     throw new ApiError('로그인 세션이 만료되었습니다.', 401);

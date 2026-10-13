@@ -20,7 +20,7 @@ import {
 } from '@/lib/report-share';
 import type { ReportStore } from '@/lib/report-types';
 import { validateJejuStore } from '@/lib/jeju-arrivals';
-import { mergeFromPlanner, mirrorToPlanner, plannerTeamId } from '@/lib/planner-sync';
+import { mergeFromPlanner, mirrorToPlanner, plannerTeamId, readPlannerSummary } from '@/lib/planner-sync';
 
 export const dynamic = 'force-dynamic';
 const headers = { 'cache-control': 'private, no-store, max-age=0' };
@@ -91,8 +91,10 @@ export async function GET(request: Request) {
     const { teamId } = await context(request);
     const { version, store } = await readTeamStore(teamId);
     // 파크사업팀은 경영플래너 공용 실적(구글시트 자동 수집 포함)으로 맞춰서 보여 줍니다.
-    const shown = teamId === plannerTeamId() ? await mergeFromPlanner(store) : store;
-    return Response.json({ store: shown, version }, { headers });
+    if (teamId !== plannerTeamId()) return Response.json({ store, version }, { headers });
+    // '목표 대비 현황'도 같은 요청으로 보냅니다 (따로 로그인 확인하는 호출을 없앰).
+    const [shown, plannerSummary] = await Promise.all([mergeFromPlanner(store), readPlannerSummary().catch(() => null)]);
+    return Response.json({ store: shown, version, plannerSummary }, { headers });
   } catch (error) {
     return apiErrorResponse(error, '보고서를 불러오지 못했습니다.');
   }

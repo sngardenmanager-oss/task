@@ -7,6 +7,7 @@ import {
 } from '@/lib/auth-server';
 import { listCompanyEvents } from '@/lib/company-events-store';
 import { listTeams } from '@/lib/team-store';
+import { readPlannerSummary } from '@/lib/planner-sync';
 import {
   readAllWorkspaces,
   updateWorkspaceState,
@@ -22,10 +23,11 @@ export async function GET(request: Request) {
   try {
     const user = await authenticateRequest(request);
     requireMaster(user.email!);
-    const [teams, workspaces, companyEvents] = await Promise.all([
+    const [teams, workspaces, companyEvents, plannerSummary] = await Promise.all([
       listTeams(),
       readAllWorkspaces(),
       listCompanyEvents().catch(() => []),
+      readPlannerSummary().catch(() => null),
     ]);
     const overview: OverviewTeam[] = teams
       .filter((team) => team.active)
@@ -47,7 +49,7 @@ export async function GET(request: Request) {
           ).length,
         };
       });
-    return Response.json({ teams: overview, companyEvents }, { headers });
+    return Response.json({ teams: overview, companyEvents, plannerSummary }, { headers });
   } catch (error) {
     return apiErrorResponse(error, '전체 팀 현황을 불러오지 못했습니다.');
   }

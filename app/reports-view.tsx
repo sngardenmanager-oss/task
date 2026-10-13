@@ -25,7 +25,8 @@ import { Button } from '@/components/ui/button';
 import ReportNewsPicker from './report-news-picker';
 import RatioComposition, { DailyVisitorChart } from './report-composition';
 import { JejuReport, JejuImportPanel } from './report-jeju';
-import { PlannerStatus } from './report-planner';
+import { PlannerStatus, type PlannerSummary } from './report-planner';
+import { PLANNER_TEAM_ID, PLANNER_URL } from '@/lib/planner-link';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import type { Member, NewsItem, Task, WorkspaceState } from '@/lib/types';
 import type {
@@ -218,6 +219,9 @@ export default function ReportsView({
   const readOnly = report ? reportLocked(report) : false;
   // 보고서 저장소는 팀마다 따로입니다.
   const teamId = useCurrentTeam()?.id;
+  // 파크사업팀 실적은 경영플래너가 원천입니다. 이 팀은 여기서 CSV를 올리지 않고 경영플래너에서 올립니다.
+  const plannerOwned = (teamId ?? 'park') === PLANNER_TEAM_ID;
+  const [plannerSummary, setPlannerSummary] = useState<PlannerSummary | null>(null);
   async function load() {
     if (loading.current || !canEdit) return;
     loading.current = true;
@@ -232,11 +236,13 @@ export default function ReportsView({
         error?: string;
         store: ReportStore;
         version: number;
+        plannerSummary?: PlannerSummary | null;
       };
       if (!response.ok)
         throw new Error(body.error ?? '보고서를 불러오지 못했습니다.');
       setStore(body.store);
       setVersion(body.version);
+      setPlannerSummary(body.plannerSummary ?? null);
       setLoaded(true);
       // 저장소는 팀이 함께 쓴다. 팀 범위 초안과 내가 쓴 "내 업무" 초안 중 가장 최근 것을 연다.
       setReport(
@@ -290,9 +296,24 @@ export default function ReportsView({
     setError('');
     try {
       // 팀 저장소는 서버가 병합한다. 내가 바꾼 보고서마다 내가 마지막으로 본 서버 값을 함께 보낸다.
+      // 서버는 바뀐 보고서·새 업로드·되돌리기·보관 링크만 씁니다. 실적 사본과 이미 저장된 기록은 보내지 않습니다.
+      const changedEntries = <T extends { id: string; undoneAt?: string }>(list: T[] = [], old: T[] = []) =>
+        list.filter((entry) => {
+          const before = old.find((item) => item.id === entry.id);
+          return !before || before.undoneAt !== entry.undoneAt;
+        });
+      const slim: ReportStore = {
+        ...next,
+        reports: next.reports.filter((r) => !sameReportValue(r, store.reports.find((b) => b.id === r.id))),
+        tracks: [],
+        statistics: [],
+        jejuArrivals: [],
+        imports: changedEntries(next.imports, store.imports),
+        jejuImports: changedEntries(next.jejuImports, store.jejuImports),
+      };
       const payload = JSON.stringify({
         version,
-        store: next,
+        store: slim,
         bases: {
           reports: Object.fromEntries(
             next.reports
@@ -749,7 +770,7 @@ export default function ReportsView({
         </Field>
       </fieldset>
       <MetricCards report={report} store={store} />
-      {!readOnly && <PlannerStatus accessToken={accessToken} />}
+      {!readOnly && <PlannerStatus summary={plannerSummary} />}
       <DailyVisitorChart
         rows={readOnly ? report.statistics : store.statistics}
         start={report.config.statsStart}
@@ -1421,6 +1442,19 @@ export default function ReportsView({
             ))}
         </TabsContent>
         <TabsContent value="metrics" className="space-y-4 pt-3">
+          {plannerOwned ? (
+            <div className={panel}>
+              <h3 className="font-bold">실적·입도객 자료는 경영플래너에서 올립니다</h3>
+              <p className="my-2 text-sm text-[#64776a]">
+                파크사업팀의 매출·입장 통계와 제주 입도객은 경영플래너가 원천입니다. 구글 시트 자동 전송이나 경영플래너
+                [데이터] 탭의 CSV 업로드로 올리면 이 보고서에 자동으로 반영됩니다. 되돌리기도 경영플래너 업로드 이력에서 합니다.
+              </p>
+              <a className="text-sm font-bold text-[#2f6b4f] underline" href={PLANNER_URL} target="_blank" rel="noreferrer">
+                경영플래너 열기
+              </a>
+            </div>
+          ) : (
+            <>
           <JejuImportPanel
             key={report.id}
             report={report}
@@ -1674,6 +1708,8 @@ export default function ReportsView({
               </div>
             ))}
           </div>
+            </>
+          )}
         </TabsContent>
         <TabsContent value="archive" className="space-y-4 pt-3">
           <div className={panel}>
