@@ -28,6 +28,7 @@ import TeamSwitcher from '@/app/team-switcher';
 import { COMPANY_COLOR, companyEventAsTask } from '@/lib/company-events';
 import { ALL_TEAMS_ID } from '@/lib/team-access';
 import type { CompanyEvent, OverviewTeam, Task, Team } from '@/lib/types';
+import { PlannerStatus } from './report-planner';
 
 type Tab = 'today' | 'calendar' | 'tasks' | 'team' | 'requests' | 'events' | 'report';
 type OverviewTask = OverviewTeam['tasks'][number] & { team: Team };
@@ -258,6 +259,11 @@ export default function MasterOverview({
             </p>
           ) : (
             <>
+              {tab === 'today' && (
+                <div className="mb-5 print:hidden">
+                  <PlannerStatus accessToken={accessToken} compact />
+                </div>
+              )}
               {tab === 'today' && (
                 <TodaySummary overview={overview} onOpenTeam={onSwitchTeam} />
               )}

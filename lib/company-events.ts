@@ -40,6 +40,7 @@ export function normalizeCompanyEvent(
     time,
     endTime,
     teamIds: [...new Set((input.teamIds ?? []).filter((id) => typeof id === 'string'))],
+    affectsBusiness: input.affectsBusiness === true || undefined,
     createdAt: previous?.createdAt ?? now,
     updatedAt: now,
   };

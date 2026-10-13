@@ -44,6 +44,8 @@ export type CompanyEvent = {
   endTime?: string;
   /** 보여 줄 팀. 비어 있으면 모든 팀입니다. */
   teamIds: string[];
+  /** 경영플래너 이벤트 캘린더에 연결 (휴장·행사 등) */
+  affectsBusiness?: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -142,6 +144,8 @@ export type Task = {
   offsetDays?: number;
   /** 이 업무에서 건 연결. 한쪽에만 저장하고 반대쪽은 계산해 보여줍니다. */
   links?: TaskLink[];
+  /** 경영플래너 액션 카드에서 만든 업무면 그 액션 번호 */
+  planActionId?: string;
   createdBy: string;
   createdAt: string;
 };
@@ -190,6 +194,8 @@ export type SpecialNote = {
   completed?: boolean;
   completedAt?: string;
   comments?: Comment[];
+  /** 경영플래너 이벤트 캘린더에 연결할 특이사항 (휴장·행사·외부 충격 등) */
+  affectsBusiness?: boolean;
 };
 
 export type NewsItem = {

@@ -20,6 +20,7 @@ import {
 } from '@/lib/report-share';
 import type { ReportStore } from '@/lib/report-types';
 import { validateJejuStore } from '@/lib/jeju-arrivals';
+import { mergeFromPlanner, mirrorToPlanner, plannerTeamId } from '@/lib/planner-sync';
 
 export const dynamic = 'force-dynamic';
 const headers = { 'cache-control': 'private, no-store, max-age=0' };
@@ -89,7 +90,9 @@ export async function GET(request: Request) {
   try {
     const { teamId } = await context(request);
     const { version, store } = await readTeamStore(teamId);
-    return Response.json({ store, version }, { headers });
+    // 파크사업팀은 경영플래너 공용 실적(구글시트 자동 수집 포함)으로 맞춰서 보여 줍니다.
+    const shown = teamId === plannerTeamId() ? await mergeFromPlanner(store) : store;
+    return Response.json({ store: shown, version }, { headers });
   } catch (error) {
     return apiErrorResponse(error, '보고서를 불러오지 못했습니다.');
   }
@@ -191,7 +194,11 @@ export async function PUT(request: Request) {
         .select('version')
         .maybeSingle();
       if (error) storeError(error.message);
-      if (data) return Response.json({ version, store }, { headers });
+      if (data) {
+        if (teamId !== plannerTeamId()) return Response.json({ version, store }, { headers });
+        await mirrorToPlanner(before.store, store);
+        return Response.json({ version, store: await mergeFromPlanner(store) }, { headers });
+      }
     }
     throw new ApiError(
       '여러 사람이 동시에 저장하고 있습니다. 잠시 후 다시 저장해 주세요.',
@@ -220,7 +227,7 @@ export async function POST(request: Request) {
     let next;
     try { next = transitionReport(report, input, actor, { ...state, members }, before.store); }
     catch (error) { if (error instanceof WorkflowError) throw new ApiError(error.message, error.status); throw error; }
-    if (next === report) return Response.json({ ...before }, { headers });
+    if (next === report) return Response.json({ version: before.version, store: teamId === plannerTeamId() ? await mergeFromPlanner(before.store) : before.store }, { headers });
     const store = { ...before.store, reports: before.store.reports.map(item => item.id === next.id ? next : item) };
     const version = before.version + 1;
     const { data, error } = await getSupabaseAdmin().from('weekly_report_state').update({
@@ -229,6 +236,6 @@ export async function POST(request: Request) {
     }).eq('owner_id', reportOwnerFor(teamId)).eq('version', before.version).select('version').maybeSingle();
     if (error) storeError(error.message);
     if (!data) throw new ApiError('다른 저장과 겹쳤습니다. 최신 보고서를 확인한 뒤 다시 처리해 주세요.', 409);
-    return Response.json({ version, store }, { headers });
+    return Response.json({ version, store: teamId === plannerTeamId() ? await mergeFromPlanner(store) : store }, { headers });
   } catch (error) { return apiErrorResponse(error, '보고 처리를 저장하지 못했습니다.'); }
 }

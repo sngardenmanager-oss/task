@@ -6887,6 +6887,21 @@ function TaskForm({
   );
 }
 
+/** 경영플래너 이벤트 캘린더로 보내는 표시. 휴장·행사·외부 충격처럼 입장객에 영향을 준 일에 켭니다. */
+function BusinessFlag({ defaultChecked }: { defaultChecked?: boolean }) {
+  return (
+    <label className="flex items-center gap-2 rounded-xl bg-[#eef3ee] p-3 text-sm font-bold">
+      <input
+        name="affectsBusiness"
+        type="checkbox"
+        defaultChecked={defaultChecked}
+        className="size-4 accent-[#2f6b4f]"
+      />
+      경영 반영 (휴장·행사·외부 충격 등 입장객에 영향 → 경영플래너 이벤트로 연결)
+    </label>
+  );
+}
+
 function NoteForm({
   data,
   actor,
@@ -6911,6 +6926,7 @@ function NoteForm({
       location: formText(form, 'location'),
       body: formText(form, 'body'),
       urgent: form.get('urgent') === 'on',
+      affectsBusiness: form.get('affectsBusiness') === 'on' || undefined,
       createdBy: actor.id,
       createdAt: new Date().toISOString(),
     });
@@ -6969,6 +6985,7 @@ function NoteForm({
           />
           긴급 확인이 필요한 특이사항
         </label>
+        <BusinessFlag />
         <div className="flex justify-end gap-2">
           <Button type="button" variant="outline" onClick={close}>
             취소
@@ -7001,6 +7018,7 @@ function EditNoteForm({
       location: formText(form, 'location'),
       body: formText(form, 'body'),
       urgent: form.get('urgent') === 'on',
+      affectsBusiness: form.get('affectsBusiness') === 'on' || undefined,
     });
     close();
   }
@@ -7064,6 +7082,7 @@ function EditNoteForm({
           />
           긴급 확인이 필요한 특이사항
         </label>
+        <BusinessFlag defaultChecked={note.affectsBusiness} />
         <div className="flex justify-end gap-2">
           <Button type="button" variant="outline" onClick={close}>
             취소
@@ -7919,6 +7938,19 @@ function TaskDetail({
         <p className="whitespace-pre-line text-sm leading-6 text-[#5f6d64]">
           <LinkifiedText text={task.description || '설명이 없습니다.'} />
         </p>
+        {task.planActionId && (
+          <p className="rounded-xl bg-[#eef3ee] px-3 py-2 text-sm text-[#2f6b4f]">
+            경영플래너 액션에서 만든 업무입니다.{' '}
+            <a
+              className="font-bold underline"
+              href={`${process.env.NEXT_PUBLIC_PLANNER_URL || 'https://snoopy-planner.vercel.app'}?action=${encodeURIComponent(task.planActionId)}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              경영플래너에서 보기
+            </a>
+          </p>
+        )}
         {task.checklist.length > 0 && (
           <section>
             <h3 className="mb-2 text-sm font-black">체크리스트</h3>

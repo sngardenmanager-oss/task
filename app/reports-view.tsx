@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/button';
 import ReportNewsPicker from './report-news-picker';
 import RatioComposition, { DailyVisitorChart } from './report-composition';
 import { JejuReport, JejuImportPanel } from './report-jeju';
+import { PlannerStatus } from './report-planner';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import type { Member, NewsItem, Task, WorkspaceState } from '@/lib/types';
 import type {
@@ -748,6 +749,7 @@ export default function ReportsView({
         </Field>
       </fieldset>
       <MetricCards report={report} store={store} />
+      {!readOnly && <PlannerStatus accessToken={accessToken} />}
       <DailyVisitorChart
         rows={readOnly ? report.statistics : store.statistics}
         start={report.config.statsStart}

@@ -19,6 +19,7 @@ type Draft = {
   endTime: string;
   allTeams: boolean;
   teamIds: string[];
+  affectsBusiness: boolean;
 };
 
 const emptyDraft = (date: string): Draft => ({
@@ -30,6 +31,7 @@ const emptyDraft = (date: string): Draft => ({
   endTime: '',
   allTeams: true,
   teamIds: [],
+  affectsBusiness: false,
 });
 
 const formatDay = (value: string) =>
@@ -130,6 +132,7 @@ export default function CompanyEventsPanel({
                 time: draft.time || undefined,
                 endTime: draft.endTime || undefined,
                 teamIds: draft.allTeams ? [] : draft.teamIds,
+                affectsBusiness: draft.affectsBusiness,
               },
             });
           }}
@@ -209,6 +212,15 @@ export default function CompanyEventsPanel({
               </div>
             )}
           </fieldset>
+          <label className="flex items-center gap-2 rounded-xl bg-[#eef3ee] p-3 text-sm font-bold">
+            <input
+              type="checkbox"
+              checked={draft.affectsBusiness}
+              onChange={(e) => setDraft({ ...draft, affectsBusiness: e.target.checked })}
+              className="size-4 accent-[#2f6b4f]"
+            />
+            경영 반영 (휴장·행사 등 입장객에 영향 → 경영플래너 이벤트로 연결)
+          </label>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => setDraft(null)}>
               취소
@@ -249,6 +261,7 @@ export default function CompanyEventsPanel({
                     endTime: event.endTime ?? '',
                     allTeams: !event.teamIds.length,
                     teamIds: event.teamIds,
+                    affectsBusiness: Boolean(event.affectsBusiness),
                   })
                 }
               >
