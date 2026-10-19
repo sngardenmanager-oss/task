@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/button';
 import type { Member, WorkspaceState } from '@/lib/types';
 import type { ReportDocument } from '@/lib/report-types';
 import {
-  projectSnapshots,
   reportLocked,
   workflowLabels,
   workflowActionLabels,
@@ -18,7 +17,7 @@ export default function ReportWorkflowPanel({
   busy,
   dirty,
   onAction,
-  openTask,
+  initialNote = '',
 }: {
   report: ReportDocument;
   actor: Member;
@@ -31,7 +30,8 @@ export default function ReportWorkflowPanel({
     finalizerId: string,
     note: string,
   ) => Promise<void>;
-  openTask: (id: string) => void;
+  /** 정정 제안을 반영해 만든 정정본이면 제안 내용을 정정 사유로 미리 채웁니다. */
+  initialNote?: string;
 }) {
   const members = data.members.some((m) => m.id === actor.id)
     ? data.members
@@ -46,18 +46,9 @@ export default function ReportWorkflowPanel({
       members.find((m) => m.active && m.role === 'admin')?.id ??
       '',
   );
-  const [note, setNote] = useState('');
-  const [showCurrent, setShowCurrent] = useState(false);
+  const [note, setNote] = useState(initialNote);
   const workflow = report.workflow;
   const frozen = reportLocked(report);
-  const snapshots =
-    !showCurrent && report.projects
-      ? report.projects
-      : projectSnapshots(report, data);
-  const current = projectSnapshots(report, data);
-  const changed =
-    report.projects &&
-    JSON.stringify(report.projects) !== JSON.stringify(current);
   const actions: WorkflowAction[] = [];
   if (!frozen) actions.push('submit');
   if (
@@ -198,71 +189,6 @@ export default function ReportWorkflowPanel({
           </ol>
         </details>
       ) : null}
-      {!!snapshots.length && (
-        <div className="space-y-3 border-t border-[#cbd8ce] pt-3">
-          <div className="flex flex-wrap justify-between gap-2">
-            <h4 className="font-semibold">연결 프로젝트 현황</h4>
-            {report.projects && (
-              <Button
-                variant="outline"
-                onClick={() => setShowCurrent(!showCurrent)}
-              >
-                {showCurrent ? '보고 당시 보기' : '현재 업무와 비교'}
-              </Button>
-            )}
-          </div>
-          <p className="text-xs text-[#64776a]">
-            {report.projects && !showCurrent
-              ? '제출 당시 보존된 내용'
-              : '현재 저장된 업무'}{' '}
-            · 지연은 보고 기준일 대비 미완료 하위 업무입니다.
-            {changed ? ' 보고 이후 원본 변경이 있습니다.' : ''}
-          </p>
-          {snapshots.map((project) => (
-            <article className="rounded-xl bg-white p-3" key={project.id}>
-              <button
-                className="font-bold underline"
-                onClick={() => openTask(project.id)}
-              >
-                {project.title}
-              </button>
-              <p className="my-2 text-sm">
-                D-day {project.date} · 최종 완료 {project.completed}/
-                {project.total} · 완료 요청 {project.requested} · 지연{' '}
-                {project.overdue}
-              </p>
-              <progress
-                className="h-2 w-full accent-[#2f6b4f]"
-                value={project.completed}
-                max={project.total || 1}
-                aria-label={`${project.title} 완료율`}
-              />
-              <details className="mt-2 text-sm">
-                <summary>하위 일정과 연결 보기</summary>
-                {project.tasks
-                  .filter((task) => task.id !== project.id)
-                  .map((task) => (
-                    <button
-                      key={task.id}
-                      className="mt-1 block text-left underline"
-                      onClick={() => openTask(task.id)}
-                    >
-                      {task.title} · {task.date} ·{' '}
-                      {
-                        {
-                          scheduled: '예정',
-                          in_progress: '진행 중',
-                          completion_requested: '완료 요청',
-                          completed: '최종 완료',
-                        }[task.status]
-                      }
-                    </button>
-                  ))}
-              </details>
-            </article>
-          ))}
-        </div>
-      )}
     </section>
   );
 }

@@ -149,6 +149,8 @@ export type ReportStore = {
   archiveLinks: Record<string, string>;
   /** 백업 후 자동 정리한 확정 보고서 id. 오래 열어 둔 화면이 다시 살려내지 못하게 기록합니다. */
   deletedReportIds?: string[];
+  /** 확정본 정정 제안. 서버의 정정 제안 요청으로만 바뀌며 초안 저장으로는 바뀌지 않습니다. */
+  corrections?: import('./report-corrections').CorrectionProposal[];
 };
 export type TaskStatusHistory = {
   at: string;

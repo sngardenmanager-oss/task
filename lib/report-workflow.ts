@@ -41,6 +41,10 @@ export type ProjectSnapshot = {
   completed: number;
   requested: number;
   overdue: number;
+  /** 진행 중인데 종료일이 지난 하위 일정(지연과 구분). 판정 규칙 변경 전 제출본에는 없습니다. */
+  overrun?: number;
+  /** 메인 일정 등록 시각. 주의 표시가 없는 프로젝트를 최신순으로 나열할 때 씁니다. */
+  createdAt?: string;
   tasks: Pick<
     Task,
     | 'id'
@@ -76,6 +80,17 @@ export function reportLocked(report: ReportDocument) {
       !['changes_requested', 'withdrawn'].includes(report.workflow.status))
   );
 }
+/** 캘린더와 같은 지연 판정: 예정 상태로 종료일이 기준일을 지나면 지연, 진행 중이면 기간 초과,
+ * 완료 요청(승인 대기)·최종 완료는 지연으로 세지 않습니다. */
+export function childDelay(
+  task: Pick<Task, 'status' | 'date' | 'endDate'>,
+  cutoff: string,
+): 'overdue' | 'overrun' | null {
+  if ((task.endDate ?? task.date) >= cutoff) return null;
+  if (task.status === 'scheduled') return 'overdue';
+  if (task.status === 'in_progress') return 'overrun';
+  return null;
+}
 export function projectSnapshots(
   report: ReportDocument,
   state: WorkspaceState,
@@ -106,10 +121,12 @@ export function projectSnapshots(
           (task) => task.status === 'completion_requested',
         ).length,
         overdue: children.filter(
-          (task) =>
-            task.status !== 'completed' &&
-            (task.endDate ?? task.date) < report.config.cutoff,
+          (task) => childDelay(task, report.config.cutoff) === 'overdue',
         ).length,
+        overrun: children.filter(
+          (task) => childDelay(task, report.config.cutoff) === 'overrun',
+        ).length,
+        createdAt: root.createdAt,
         tasks: [root, ...children].map(
           ({
             id,
@@ -281,4 +298,34 @@ export function transitionReport(
     note,
   });
   return { ...next, workflow, updatedAt: now };
+}
+
+/** 프로젝트 주의 단계: 3 지연 있음 · 2 D-day 7일 이내 · 1 완료 승인 대기 · 0 없음 · -1 모두 완료 */
+export function projectAttention(project: ProjectSnapshot, cutoff: string) {
+  if (project.total > 0 && project.completed === project.total) return -1;
+  if (project.overdue > 0) return 3;
+  const dday = project.date;
+  if (dday && dday >= cutoff && dday <= shiftDate(cutoff, 7)) return 2;
+  if (project.requested > 0) return 1;
+  return 0;
+}
+function shiftDate(day: string, n: number) {
+  const d = new Date(day + 'T12:00:00Z');
+  if (!Number.isFinite(d.getTime())) return day;
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+/** 주의가 높은 순, 같은 단계는 D-day 빠른 순. 주의 표시가 없으면 최신(최근 등록) 순, 모두 완료된 프로젝트는 맨 뒤. */
+export function sortProjects(projects: ProjectSnapshot[], cutoff: string) {
+  return projects
+    .map((project) => ({ project, level: projectAttention(project, cutoff) }))
+    .sort((a, b) => {
+      if (a.level !== b.level) return b.level - a.level;
+      if (a.level > 0) return a.project.date.localeCompare(b.project.date);
+      return (
+        (b.project.createdAt ?? b.project.date).localeCompare(
+          a.project.createdAt ?? a.project.date,
+        ) || b.project.date.localeCompare(a.project.date)
+      );
+    });
 }

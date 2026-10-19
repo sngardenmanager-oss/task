@@ -706,6 +706,27 @@ routeSource = routeSource.replace(
   "from '@/lib/jeju-arrivals'",
   'from ' + JSON.stringify(jejuUrl),
 );
+routeSource = routeSource.replace(
+  "from '@/lib/report-corrections'",
+  'from ' +
+    JSON.stringify(
+      'data:text/javascript;base64,' +
+        Buffer.from(
+          ts.transpileModule(
+            await fs.readFile(
+              new URL('../../lib/report-corrections.ts', import.meta.url),
+              'utf8',
+            ),
+            {
+              compilerOptions: {
+                module: ts.ModuleKind.ESNext,
+                target: ts.ScriptTarget.ES2022,
+              },
+            },
+          ).outputText,
+        ).toString('base64'),
+    ),
+);
 const shareUrl =
   'data:text/javascript;base64,' +
   Buffer.from(

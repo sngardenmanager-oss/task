@@ -20,6 +20,7 @@ import {
 } from '@/lib/report-share';
 import type { ReportStore } from '@/lib/report-types';
 import { validateJejuStore } from '@/lib/jeju-arrivals';
+import { applyCorrectionInput, CorrectionError, type CorrectionInput } from '@/lib/report-corrections';
 import { mergeFromPlanner, mirrorToPlanner, plannerTeamId, readPlannerSummary } from '@/lib/planner-sync';
 
 export const dynamic = 'force-dynamic';
@@ -220,7 +221,10 @@ export async function PUT(request: Request) {
 export async function POST(request: Request) {
   try {
     const { actor, teamId, state } = await context(request);
-    const input = await request.json() as WorkflowInput & { reportId: string };
+    const raw = await request.json() as { kind?: string };
+    if (raw?.kind === 'correction' || raw?.kind === 'correction-resolve')
+      return await correctionRequest(raw as CorrectionInput, actor, teamId);
+    const input = raw as WorkflowInput & { reportId: string };
     if (!input || typeof input.reportId !== 'string') throw new ApiError('보고서를 선택해 주세요.', 400);
     const before = await readTeamStore(teamId);
     const report = before.store.reports.find(item => item.id === input.reportId);
@@ -240,4 +244,28 @@ export async function POST(request: Request) {
     if (!data) throw new ApiError('다른 저장과 겹쳤습니다. 최신 보고서를 확인한 뒤 다시 처리해 주세요.', 409);
     return Response.json({ version, store: teamId === plannerTeamId() ? await mergeFromPlanner(store) : store }, { headers });
   } catch (error) { return apiErrorResponse(error, '보고 처리를 저장하지 못했습니다.'); }
+}
+
+/** 확정본 정정 제안 등록·처리. 확정본은 그대로 두고 저장소의 정정 제안 목록만 바꿉니다. */
+async function correctionRequest(
+  input: CorrectionInput,
+  actor: Awaited<ReturnType<typeof context>>['actor'],
+  teamId: string,
+) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const before = await readTeamStore(teamId);
+    let store: ReportStore;
+    try { store = applyCorrectionInput(before.store, input, actor); }
+    catch (error) { if (error instanceof CorrectionError) throw new ApiError(error.message, error.status); throw error; }
+    if (store === before.store)
+      return Response.json({ version: before.version, store: teamId === plannerTeamId() ? await mergeFromPlanner(store) : store }, { headers });
+    const version = before.version + 1;
+    const { data, error } = await getSupabaseAdmin().from('weekly_report_state').update({
+      version, payload: store, updated_at: new Date().toISOString(),
+      audit_context: { id: actor.id, name: actor.name, role: actor.role, requestId: input.requestId, action: input.kind === 'correction' ? '정정 제안' : '정정 제안 처리' },
+    }).eq('owner_id', reportOwnerFor(teamId)).eq('version', before.version).select('version').maybeSingle();
+    if (error) storeError(error.message);
+    if (data) return Response.json({ version, store: teamId === plannerTeamId() ? await mergeFromPlanner(store) : store }, { headers });
+  }
+  throw new ApiError('여러 사람이 동시에 저장하고 있습니다. 잠시 후 다시 시도해 주세요.', 409);
 }

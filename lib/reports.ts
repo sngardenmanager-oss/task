@@ -836,3 +836,37 @@ export function completedDay(value?: string) {
     ? date.toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' })
     : '';
 }
+
+/** 같은 업무·특이사항을 가리키는 보고 행인지(행 번호, 업무 번호, 특이사항 번호 중 하나라도 같으면) 확인합니다. */
+export function sameReportItem(a: ReportRow, b: ReportRow) {
+  return (
+    a.id === b.id ||
+    (!!a.taskId && a.taskId === b.taskId) ||
+    (!!a.noteId && a.noteId === b.noteId)
+  );
+}
+export type CompletionSuggestion = { row: ReportRow; reportedIn: ReportDocument };
+/** 보고 완결 제안: 최종 완료된 뒤 확정본에 '최종 완료'로 보고된 적이 있는데 아직 완결하지 않은 행입니다.
+ * 메인보다 먼저 끝난 하위 일정도 각자 행이므로 같은 기준으로 제안됩니다. 자동 완결하지 않고 사람이 확인해 완결합니다. */
+export function completionSuggestions(
+  report: ReportDocument,
+  reports: ReportDocument[],
+): CompletionSuggestion[] {
+  const finals = reports
+    .filter((r) => r.status === 'final' && r.id !== report.id)
+    .sort((a, b) => b.config.meetingDate.localeCompare(a.config.meetingDate));
+  const result: CompletionSuggestion[] = [];
+  for (const row of report.rows) {
+    if (row.closed || row.status !== '최종 완료') continue;
+    const reportedIn = finals.find((final) =>
+      final.rows.some(
+        (old) =>
+          old.visible && old.status === '최종 완료' && sameReportItem(old, row),
+      ),
+    );
+    if (reportedIn) result.push({ row, reportedIn });
+  }
+  return result;
+}
+export const suggestedCloseNote = (reportedIn: ReportDocument) =>
+  `완료 보고됨 (${reportedIn.config.meetingDate} 확정본)`;
