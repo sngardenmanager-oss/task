@@ -1141,6 +1141,11 @@ export default function WorkCalendarApp({
   const calendarData = useMemo(
     () => ({
       ...data,
+      // 캘린더에도 팀원은 본인이 담당한 루틴만 표시합니다.
+      routines:
+        actor.role === 'admin'
+          ? data.routines
+          : data.routines.filter((routine) => routine.assigneeId === actor.id),
       categories: [
         ...data.categories,
         {
@@ -1151,7 +1156,7 @@ export default function WorkCalendarApp({
         },
       ],
     }),
-    [data],
+    [data, actor.role, actor.id],
   );
   const companyTasks = useMemo(
     () => companyEvents.map(companyEventAsTask),
@@ -2440,6 +2445,8 @@ export default function WorkCalendarApp({
           {view === 'routines' && (
             <RoutinesView
               data={data}
+              actor={actor}
+              isAdmin={isAdmin}
               canEdit={canEdit}
               openCreate={() => openModal('routine')}
               openRoutine={openRoutine}
@@ -2560,6 +2567,8 @@ export default function WorkCalendarApp({
       {modal === 'routine' && (
         <RoutineForm
           data={data}
+          actor={actor}
+          isAdmin={isAdmin}
           close={closeModal}
           save={(routine) =>
             updateData(
@@ -2575,6 +2584,8 @@ export default function WorkCalendarApp({
       {modal === 'editRoutine' && selectedRoutine && (
         <EditRoutineForm
           data={data}
+          actor={actor}
+          isAdmin={isAdmin}
           routine={selectedRoutine}
           close={closeModal}
           save={(updatedRoutine) =>
@@ -4293,12 +4304,16 @@ function TasksView({
 
 function RoutinesView({
   data,
+  actor,
+  isAdmin,
   canEdit,
   openCreate,
   openRoutine,
   updateData,
 }: {
   data: WorkspaceState;
+  actor: Member;
+  isAdmin: boolean;
   canEdit: boolean;
   openCreate: () => void;
   openRoutine: (id: string) => void;
@@ -4307,6 +4322,27 @@ function RoutinesView({
     message?: string,
   ) => void;
 }) {
+  const [memberFilter, setMemberFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  // 관리자는 전체 루틴을 필터로 보고, 팀원은 본인이 담당한 루틴만 봅니다.
+  const ownRoutines = isAdmin
+    ? data.routines
+    : data.routines.filter((routine) => routine.assigneeId === actor.id);
+  const shownRoutines = ownRoutines.filter(
+    (routine) =>
+      (!isAdmin ||
+        ((memberFilter === 'all' || routine.assigneeId === memberFilter) &&
+          (categoryFilter === 'all' ||
+            routine.categoryId === categoryFilter))) &&
+      (statusFilter === 'all' ||
+        (statusFilter === 'active' ? routine.active : !routine.active)),
+  );
+  const filtered =
+    memberFilter !== 'all' ||
+    statusFilter !== 'all' ||
+    categoryFilter !== 'all';
+
   function createToday(routine: Routine) {
     const task: Task = {
       id: uid('task'),
@@ -4338,7 +4374,9 @@ function RoutinesView({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-[#748078]">
-          사용 중인 루틴은 다음 실행일부터 캘린더에 자동 표시됩니다.
+          {isAdmin
+            ? '사용 중인 루틴은 다음 실행일부터 캘린더에 자동 표시됩니다.'
+            : `${actor.name}님이 담당한 루틴만 표시됩니다.`}
         </p>
         {canEdit && (
           <Button onClick={openCreate}>
@@ -4347,8 +4385,79 @@ function RoutinesView({
           </Button>
         )}
       </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <label className="flex items-center gap-2 text-sm font-bold">
+          <ListFilter className="size-4" />
+          <select
+            aria-label="루틴 상태 필터"
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+            className={inputClass}
+          >
+            <option value="all">모든 상태</option>
+            <option value="active">사용 중</option>
+            <option value="paused">중단됨</option>
+          </select>
+        </label>
+        {isAdmin && (
+          <>
+            <select
+              aria-label="루틴 담당자 필터"
+              value={memberFilter}
+              onChange={(event) => setMemberFilter(event.target.value)}
+              className={inputClass}
+            >
+              <option value="all">모든 담당자</option>
+              {data.members
+                .filter(
+                  (member) =>
+                    member.active ||
+                    data.routines.some(
+                      (routine) => routine.assigneeId === member.id,
+                    ),
+                )
+                .map((member) => (
+                  <option key={member.id} value={member.id}>
+                    {member.name}
+                    {member.active ? '' : ' (비활성)'}
+                  </option>
+                ))}
+            </select>
+            <select
+              aria-label="루틴 분류 필터"
+              value={categoryFilter}
+              onChange={(event) => setCategoryFilter(event.target.value)}
+              className={inputClass}
+            >
+              <option value="all">모든 분류</option>
+              {data.categories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+        <span className="shrink-0 text-sm font-bold text-[#748078]">
+          {shownRoutines.length}개
+          {filtered && ` / 전체 ${ownRoutines.length}개`}
+        </span>
+      </div>
       <div className="grid gap-3 lg:grid-cols-2">
-        {data.routines.map((routine) => {
+        {shownRoutines.length === 0 && (
+          <div className="lg:col-span-2">
+            <Empty
+              title={
+                ownRoutines.length
+                  ? '조건에 맞는 루틴이 없습니다.'
+                  : isAdmin
+                    ? '등록된 루틴이 없습니다.'
+                    : '담당한 루틴이 없습니다.'
+              }
+            />
+          </div>
+        )}
+        {shownRoutines.map((routine) => {
           const category = data.categories.find(
             (item) => item.id === routine.categoryId,
           );
@@ -7096,43 +7205,77 @@ function EditNoteForm({
 
 function RoutineForm({
   data,
+  actor,
+  isAdmin,
   close,
   save,
 }: {
   data: WorkspaceState;
+  actor: Member;
+  isAdmin: boolean;
   close: () => void;
   save: (routine: Routine) => void;
 }) {
-  return <RoutineEditor data={data} close={close} save={save} />;
+  return (
+    <RoutineEditor
+      data={data}
+      actor={actor}
+      isAdmin={isAdmin}
+      close={close}
+      save={save}
+    />
+  );
 }
 
 function EditRoutineForm({
   data,
+  actor,
+  isAdmin,
   routine,
   close,
   save,
 }: {
   data: WorkspaceState;
+  actor: Member;
+  isAdmin: boolean;
   routine: Routine;
   close: () => void;
   save: (routine: Routine) => void;
 }) {
   return (
-    <RoutineEditor data={data} routine={routine} close={close} save={save} />
+    <RoutineEditor
+      data={data}
+      actor={actor}
+      isAdmin={isAdmin}
+      routine={routine}
+      close={close}
+      save={save}
+    />
   );
 }
 
 function RoutineEditor({
   data,
+  actor,
+  isAdmin,
   routine,
   close,
   save,
 }: {
   data: WorkspaceState;
+  actor: Member;
+  isAdmin: boolean;
   routine?: Routine;
   close: () => void;
   save: (routine: Routine) => void;
 }) {
+  // 팀원은 본인 루틴만 볼 수 있으므로 담당자도 본인으로 고정합니다.
+  const eligibleMembers = data.members.filter(
+    (member) => member.active && member.role !== 'commenter',
+  );
+  const ownOption = eligibleMembers.filter((member) => member.id === actor.id);
+  const assigneeOptions =
+    isAdmin || !ownOption.length ? eligibleMembers : ownOption;
   const [checklistText, setChecklistText] = useState(
     routine?.checklist.join('\n') ?? '',
   );
@@ -7197,17 +7340,15 @@ function RoutineEditor({
             <select
               name="assignee"
               className={inputClass}
-              defaultValue={routine?.assigneeId}
+              defaultValue={
+                routine?.assigneeId ?? defaultAssigneeId(data, actor)
+              }
             >
-              {data.members
-                .filter(
-                  (member) => member.active && member.role !== 'commenter',
-                )
-                .map((member) => (
-                  <option key={member.id} value={member.id}>
-                    {member.name}
-                  </option>
-                ))}
+              {assigneeOptions.map((member) => (
+                <option key={member.id} value={member.id}>
+                  {member.name}
+                </option>
+              ))}
             </select>
           </Field>
           <Field label="분류">
