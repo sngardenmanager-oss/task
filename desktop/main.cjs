@@ -119,6 +119,15 @@ ipcMain.handle('news:mark-synced', async (_event, snapshotId) => {
   return true;
 });
 
+// 네이티브 대화상자가 닫힌 뒤 웹 화면에 입력 포커스를 되돌린다.
+ipcMain.on('window:refocus', (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window || window.isDestroyed()) return;
+  window.blur();
+  window.focus();
+  event.sender.focus();
+});
+
 function writeSmokeResult(result) {
   if (smokeOutput) {
     fs.writeFileSync(smokeOutput, JSON.stringify(result, null, 2), 'utf8');
