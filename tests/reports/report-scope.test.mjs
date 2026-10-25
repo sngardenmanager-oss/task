@@ -115,3 +115,27 @@ test('다른 범위에서 완결한 항목은 범위를 바꿔도 다시 들어�
   const thisRound = reopened.map((r) => (r.taskId === 'own-open' ? { ...r, closed: true } : r));
   assert.deepEqual(ids(core.collectReportRows(data, admin, team, next.tracks, thisRound)), ['own-done', 'own-open']);
 });
+
+test('아카이브한 행(완결+표출 해제)은 이번 보고서에서 빠지고 다음 회차에도 들어오지 않으며, 업무 자체는 그대로다', () => {
+  const admin = { id: 'boss', name: '관리자', email: 'boss@x', role: 'admin', team: '전체', active: true };
+  const task = (id, status) => ({
+    id, title: id, description: '', categoryId: 'c', type: 'task', assigneeId: 'boss', collaborators: [],
+    date: '2026-10-01', status, checklist: [],
+  });
+  const data = { members: [admin], categories: [], notes: [], tasks: [task('done', 'completed'), task('ongoing', 'in_progress')] };
+  const before = structuredClone(data);
+  const team = { ...core.defaultReportConfig(admin, '2026-10-26'), scope: 'team', team: core.ALL_MEMBERS_TEAM };
+  const report = core.newReport(data, admin, team, core.emptyReportStore());
+  const archived = report.rows.map((r) => ({ ...r, closed: true, visible: false, closeNote: '보고서에서 정리(아카이브)' }));
+  const store = core.saveReport(core.emptyReportStore(), { ...report, rows: archived }, admin);
+  assert.equal(archived.filter((r) => r.visible).length, 0);
+  // 다음 회차: 진행 중인 업무도 아카이브했으면 다시 들어오지 않는다.
+  const next = core.newReport(data, admin, { ...team, meetingDate: '2026-11-02' }, store);
+  assert.deepEqual(next.rows.filter((r) => r.taskId), []);
+  // 되돌리기(재개)하면 다시 들어온다.
+  const restored = archived.map((r) => (r.taskId === 'ongoing' ? { ...r, closed: false, visible: true, reopenedAt: '2026-10-27T00:00:00Z' } : r));
+  const store2 = core.saveReport(store, { ...report, rows: restored }, admin);
+  assert.deepEqual(core.newReport(data, admin, { ...team, meetingDate: '2026-11-02' }, store2).rows.map((r) => r.taskId), ['ongoing']);
+  // 캘린더 업무 데이터는 바뀌지 않는다.
+  assert.deepEqual(data, before);
+});

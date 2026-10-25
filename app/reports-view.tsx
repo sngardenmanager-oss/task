@@ -14,6 +14,7 @@ import { ArchivedTasks, LongTermReports, ReportDecisions, RecordBrowser } from '
 import ReportProjects from './report-projects';
 import CorrectionPanel from './report-corrections-panel';
 import ClosedArchive from './report-closed-archive';
+import ReportTidy from './report-tidy';
 import { openCorrections } from '@/lib/report-corrections';
 import { reportLocked, workflowLabels, type WorkflowAction } from '@/lib/report-workflow';
 import {
@@ -716,6 +717,30 @@ export default function ReportsView({
       40,
     );
   }
+  /** 보고서에서만 빼는 정리. 캘린더 업무는 건드리지 않습니다. */
+  function archiveRows(ids: string[]) {
+    if (!report || !ids.length) return;
+    const picked = new Set(ids);
+    edit({
+      rows: report.rows.map((r) =>
+        picked.has(r.id)
+          ? { ...r, closed: true, visible: false, closeNote: r.closeNote || '보고서에서 정리(아카이브)' }
+          : r,
+      ),
+    });
+    setMessage(`${ids.length}건을 아카이브했습니다. 초안을 저장하면 반영됩니다. 캘린더의 업무는 그대로 남습니다.`);
+  }
+  function restoreRows(ids: string[]) {
+    if (!report || !ids.length) return;
+    const picked = new Set(ids);
+    const now = new Date().toISOString();
+    edit({
+      rows: report.rows.map((r) =>
+        picked.has(r.id) ? { ...r, closed: false, visible: true, reopenedAt: now } : r,
+      ),
+    });
+    setMessage(`${ids.length}건을 보고서에 되돌렸습니다.`);
+  }
   function reopenTrack(track: ReportStore['tracks'][number]) {
     if (!report) return;
     edit({
@@ -1030,6 +1055,9 @@ export default function ReportsView({
         <TabsList className="h-auto w-full flex-wrap justify-start gap-1 bg-[#e3eee7] p-1">
           <TabsTrigger className="min-h-10 px-3" value="weekly">
             이번 주 보고
+          </TabsTrigger>
+          <TabsTrigger className="min-h-10 px-3" value="tidy">
+            완료·표출 정리
           </TabsTrigger>
           <TabsTrigger className="min-h-10 px-3" value="followup">
             전주 후속 확인
@@ -1657,6 +1685,9 @@ export default function ReportsView({
               onChange={(next) => edit({ news: next })}
             />
           </section>
+        </TabsContent>
+        <TabsContent value="tidy" className="space-y-4 pt-3">
+          <ReportTidy rows={report.rows} disabled={readOnly || busy} onArchive={archiveRows} onRestore={restoreRows} />
         </TabsContent>
         <TabsContent value="followup" className="space-y-3 pt-3">
           <div className={panel}>
