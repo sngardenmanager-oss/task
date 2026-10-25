@@ -47,6 +47,15 @@ export function previousYear(day: string) {
   const candidate = year + day.slice(4);
   return validDay(candidate) ? candidate : year + '-02-28';
 }
+/** 보고 범위 '선택 팀'에서 작업공간의 모든 팀원을 고르는 값입니다. 마스터 계정의 소속 표시와도 같습니다. */
+export const ALL_MEMBERS_TEAM = '전체';
+export function scopeLabel(config: ReportConfig) {
+  if (config.scope === 'mine') return '내 담당·협업 업무';
+  return config.team === ALL_MEMBERS_TEAM ? '전체 팀원' : config.team + ' 팀';
+}
+export function inReportTeam(member: Member, team: string) {
+  return team === ALL_MEMBERS_TEAM || member.team === team;
+}
 export function defaultReportConfig(
   actor: Member,
   meetingDate = todayKst(),
@@ -63,8 +72,9 @@ export function defaultReportConfig(
     planEnd: shiftDay(monday, 6),
     statsStart: shiftDay(monday, -7),
     statsEnd: shiftDay(monday, -1),
-    scope: 'mine',
-    team: actor.team,
+    // 관리자는 팀원 업무를 모아 보고하므로 전체 팀원 범위로 시작합니다.
+    scope: actor.role === 'admin' ? 'team' : 'mine',
+    team: actor.role === 'admin' ? ALL_MEMBERS_TEAM : actor.team,
     author: actor.name,
     attendees: '',
     metricNote: '',
@@ -83,7 +93,9 @@ export function inReportScope(
   const ids = [task.assigneeId, ...task.collaborators];
   return config.scope === 'mine'
     ? ids.includes(actor.id)
-    : data.members.some((m) => m.team === config.team && ids.includes(m.id));
+    : data.members.some(
+        (m) => inReportTeam(m, config.team) && ids.includes(m.id),
+      );
 }
 const statusNames = {
   scheduled: '예정',

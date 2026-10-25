@@ -51,6 +51,7 @@ import {
   collectReportRows,
   completionSuggestions,
   daysBetween,
+  ALL_MEMBERS_TEAM,
   defaultReportConfig,
   emptyReportStore,
   finalizeReport,
@@ -61,7 +62,9 @@ import {
   reportValidation,
   sameReportValue,
   saveReport,
+  inReportTeam,
   scopeKey,
+  scopeLabel,
   shiftDay,
   statisticColumns,
   suggestedCloseNote,
@@ -800,7 +803,7 @@ export default function ReportsView({
         <div>
           <p className="text-lg font-bold text-[#245b43]">주간회의 통합보고</p>
           <p className="mt-1 text-sm text-[#64776a]">
-            {report.config.scope === 'mine' ? '내 담당·협업 업무' : report.config.team + ' 팀'} ·{' '}
+            {scopeLabel(report.config)} ·{' '}
             {report.config.title} · 회의 {report.config.meetingDate}
           </p>
         </div>
@@ -957,10 +960,12 @@ export default function ReportsView({
               value={report.config.team}
               onChange={(e) => configEdit('team', e.target.value)}
             >
-              {[...new Set([actor.team, ...data.members.map((m) => m.team)])]
+              {[...new Set([ALL_MEMBERS_TEAM, actor.team, ...data.members.map((m) => m.team)])]
                 .filter(Boolean)
                 .map((team) => (
-                  <option key={team}>{team}</option>
+                  <option key={team} value={team}>
+                    {team === ALL_MEMBERS_TEAM ? '전체 팀원' : team}
+                  </option>
                 ))}
             </select>
           </Field>
@@ -1520,7 +1525,8 @@ export default function ReportsView({
                     ? n.createdBy === actor.id
                     : data.members.some(
                         (m) =>
-                          m.id === n.createdBy && m.team === report.config.team,
+                          m.id === n.createdBy &&
+                          inReportTeam(m, report.config.team),
                       ),
                 )
                 .map((note) => (

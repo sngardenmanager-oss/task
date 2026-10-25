@@ -69,7 +69,8 @@ const actor = {
   role: 'admin',
   active: true,
 };
-const config = core.defaultReportConfig(actor, '2026-09-21');
+// 아래 검사들은 작성자 본인 범위('내 담당·협업 업무') 기준입니다.
+const config = { ...core.defaultReportConfig(actor, '2026-09-21'), scope: 'mine' };
 const task = (id, date, extra = {}) => ({
   id,
   title: id,

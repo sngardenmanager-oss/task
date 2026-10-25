@@ -15,6 +15,7 @@ import {
   completedDay,
   dailyComposition,
   daysBetween,
+  scopeLabel,
   sortNews,
   statisticColumns,
 } from './reports';
@@ -226,9 +227,7 @@ export function reportTables(report: ReportDocument): ReportTable[] {
     ['참석자', report.config.attendees],
     [
       '보고 범위',
-      report.config.scope === 'mine'
-        ? '내 담당·협업 업무'
-        : report.config.team + ' 팀',
+      scopeLabel(report.config),
     ],
     ['업무 구분 기준일', report.config.cutoff],
     ['실적 기간', report.config.actualStart + ' ~ ' + report.config.actualEnd],
