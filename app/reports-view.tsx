@@ -52,6 +52,7 @@ import {
   completionSuggestions,
   daysBetween,
   ALL_MEMBERS_TEAM,
+  closedTracksInScope,
   defaultReportConfig,
   emptyReportStore,
   finalizeReport,
@@ -64,7 +65,6 @@ import {
   sameReportValue,
   saveReport,
   inReportTeam,
-  scopeKey,
   scopeLabel,
   shiftDay,
   statisticColumns,
@@ -720,8 +720,10 @@ export default function ReportsView({
     if (!report) return;
     edit({
       rows: report.rows.some((r) => r.id === track.id)
-        ? report.rows.map((r) => (r.id === track.id ? { ...r, closed: false, visible: true } : r))
-        : [...report.rows, { ...track.row, closed: false, visible: true }],
+        ? report.rows.map((r) =>
+            r.id === track.id ? { ...r, closed: false, visible: true, reopenedAt: new Date().toISOString() } : r,
+          )
+        : [...report.rows, { ...track.row, closed: false, visible: true, reopenedAt: new Date().toISOString() }],
     });
     setMessage('보고를 재개했습니다. 초안을 저장하면 다음 회차에도 이어집니다.');
   }
@@ -758,9 +760,7 @@ export default function ReportsView({
     row.closed ? 'closed' : suggestedIds.has(row.id) ? 'suggested' : 'active';
   const viewCounts = { active: 0, suggested: 0, closed: 0 };
   for (const row of report.rows) viewCounts[viewOf(row)] += 1;
-  const scopeTracks = store.tracks.filter(
-    (t) => t.closed && t.scopeKey === scopeKey(report.config, report.ownerId),
-  );
+  const scopeTracks = closedTracksInScope(store.tracks, data, actor, report.config, report.ownerId);
   // 내가 검토하거나 확정할 차례인 보고
   const myQueue = store.reports.filter(
     (r) =>
@@ -2376,6 +2376,7 @@ function ReportRowEditor({
   const close = (closed: boolean) =>
     onChange({
       closed,
+      ...(closed ? {} : { reopenedAt: new Date().toISOString() }),
       closeNote:
         closed && !row.closeNote && suggestion
           ? suggestedCloseNote(suggestion)

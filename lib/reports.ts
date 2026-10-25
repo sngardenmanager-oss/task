@@ -122,6 +122,62 @@ export function rowsKeptOnScopeChange(
     return true;
   });
 }
+function trackRef(row: Pick<ReportRow, 'id' | 'taskId' | 'noteId'>) {
+  return row.taskId
+    ? 'task:' + row.taskId
+    : row.noteId
+      ? 'note:' + row.noteId
+      : 'row:' + row.id;
+}
+/** 항목마다 가장 최근의 완결·재개 기록입니다. 보고 범위와 상관없이 봅니다.
+ * 그래서 예전 '내 업무' 보고서나 다른 범위에서 완결한 업무가 범위를 바꿨다고 다시 들어오지 않습니다. */
+function latestClosures(tracks: ReportTrack[]) {
+  const latest = new Map<
+    string,
+    { at: string; closed: boolean; track: ReportTrack }
+  >();
+  for (const track of tracks) {
+    const last = track.history.at(-1);
+    if (!last) continue;
+    const ref = trackRef(track.row);
+    const seen = latest.get(ref);
+    if (!seen || last.at > seen.at)
+      latest.set(ref, { at: last.at, closed: last.closed, track });
+  }
+  return latest;
+}
+function closedEarlier(
+  row: ReportRow,
+  latest: ReturnType<typeof latestClosures>,
+) {
+  const entry = latest.get(trackRef(row));
+  return !!entry?.closed && !(row.reopenedAt && row.reopenedAt > entry.at);
+}
+/** 완결 아카이브에 보여 줄 항목: 이 범위에서 완결한 것과, 다른 범위에서 완결했지만 이 범위에 드는 업무. */
+export function closedTracksInScope(
+  tracks: ReportTrack[],
+  data: WorkspaceState,
+  actor: Member,
+  config: ReportConfig,
+  ownerId: string,
+) {
+  const key = scopeKey(config, ownerId);
+  const latest = latestClosures(tracks);
+  const result = new Map<string, ReportTrack>();
+  for (const track of tracks) {
+    if (!track.closed || track.scopeKey !== key) continue;
+    const entry = latest.get(trackRef(track.row));
+    if (entry && !entry.closed) continue;
+    result.set(trackRef(track.row), track);
+  }
+  for (const [ref, entry] of latest) {
+    if (!entry.closed || result.has(ref)) continue;
+    const task = data.tasks.find((t) => t.id === entry.track.row.taskId);
+    if (task && inReportScope(task, data, actor, config))
+      result.set(ref, entry.track);
+  }
+  return [...result.values()];
+}
 const statusNames = {
   scheduled: '예정',
   in_progress: '진행 중',
@@ -178,6 +234,7 @@ export function collectReportRows(
 ): ReportRow[] {
   const key = scopeKey(config, actor.id);
   const savedTracks = tracks.filter((t) => t.scopeKey === key);
+  const latest = latestClosures(tracks);
   const result = new Map<string, ReportRow>(
     existing.map((row) => [row.id, structuredClone(row)]),
   );
@@ -253,8 +310,11 @@ export function collectReportRows(
   }
   // Routine work is managed on its own and never enters the weekly report,
   // including rows an earlier draft or saved track already picked up.
+  // Rows closed in an earlier round (in any scope) stay out unless reopened since;
+  // rows closed in this round stay so they show as '이번 회차 완결'.
   return [...result.values()].filter(
     (row) =>
+      (row.closed || !closedEarlier(row, latest)) &&
       !row.sourceRoutineId &&
       !(
         row.taskId && isRoutineTask(data.tasks.find((t) => t.id === row.taskId))

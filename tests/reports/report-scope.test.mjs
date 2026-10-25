@@ -75,3 +75,43 @@ test('보고 범위를 바꿔도 새 범위에 드는 행은 써 둔 내용을 �
   assert.deepEqual(back.filter((r) => r.taskId).map((r) => r.taskId), ['own']);
   assert.ok(!back.some((r) => r.noteId === 'n-mate'));
 });
+
+test('다른 범위에서 완결한 항목은 범위를 바꿔도 다시 들어오지 않고, 재개하면 돌아온다', () => {
+  const admin = { id: 'boss', name: '관리자', email: 'boss@x', role: 'admin', team: '전체', active: true };
+  const member = { id: 'mate', name: '팀원', email: 'mate@x', role: 'member', team: '파크사업팀', active: true };
+  const task = (id, assigneeId) => ({
+    id, title: id, description: '', categoryId: 'c', type: 'task', assigneeId, collaborators: [],
+    date: '2026-10-01', status: 'completed', checklist: [],
+  });
+  const data = {
+    members: [admin, member], categories: [], notes: [],
+    tasks: [task('own-done', 'boss'), task('mate-done', 'mate'), task('own-open', 'boss')],
+  };
+  const mine = { ...core.defaultReportConfig(admin, '2026-10-19'), scope: 'mine' };
+  const team = { ...mine, scope: 'team', team: core.ALL_MEMBERS_TEAM };
+  // 예전 '내 업무' 보고서에서 own-done을, 팀원 본인 보고서에서 mate-done을 완결했다.
+  const closed = (id, scope, at) => ({
+    id: 'task:' + id, scopeKey: scope,
+    row: { ...core.manualRow('before'), id: 'task:' + id, taskId: id, title: id, closed: true },
+    closed: true, history: [{ at, actor: 'x', closed: true, note: '끝' }],
+  });
+  let tracks = [closed('own-done', 'mine:boss', '2026-10-10T00:00:00Z'), closed('mate-done', 'mine:mate', '2026-10-11T00:00:00Z')];
+  const ids = (rows) => rows.filter((r) => r.taskId).map((r) => r.taskId).sort();
+  assert.deepEqual(ids(core.collectReportRows(data, admin, team, tracks)), ['own-open']);
+  // 범위를 바꾼 뒤 이미 저장해 버린 초안(완결 항목이 다시 들어간 상태)도 '최신 업무 불러오기'로 정리된다.
+  const polluted = core.collectReportRows(data, admin, team, []);
+  assert.deepEqual(ids(polluted), ['mate-done', 'own-done', 'own-open']);
+  const saved = core.saveReport({ ...core.emptyReportStore(), tracks }, { ...core.newReport(data, admin, team, core.emptyReportStore()), rows: polluted }, admin);
+  assert.deepEqual(ids(core.collectReportRows(data, admin, team, saved.tracks, polluted)), ['own-open']);
+  // 완결 아카이브에는 다른 범위에서 완결한 항목도 보여서 재개할 수 있다.
+  const archive = core.closedTracksInScope(saved.tracks, data, admin, team, admin.id);
+  assert.deepEqual(archive.map((t) => t.row.taskId).sort(), ['mate-done', 'own-done']);
+  // 재개(reopenedAt이 완결보다 뒤)하면 다시 보고에 들어오고, 저장 후 다음 회차에도 이어진다.
+  const reopened = [...polluted.filter((r) => r.taskId === 'own-open'), { ...archive.find((t) => t.row.taskId === 'own-done').row, closed: false, reopenedAt: '2026-10-20T00:00:00Z' }];
+  assert.deepEqual(ids(core.collectReportRows(data, admin, team, saved.tracks, reopened)), ['own-done', 'own-open']);
+  const next = core.saveReport(saved, { ...core.newReport(data, admin, team, saved), rows: reopened }, admin);
+  assert.deepEqual(ids(core.collectReportRows(data, admin, team, next.tracks)), ['own-done', 'own-open']);
+  // 이번 회차에 완결로 체크한 행은 이번 보고서에는 '이번 회차 완결'로 남는다.
+  const thisRound = reopened.map((r) => (r.taskId === 'own-open' ? { ...r, closed: true } : r));
+  assert.deepEqual(ids(core.collectReportRows(data, admin, team, next.tracks, thisRound)), ['own-done', 'own-open']);
+});

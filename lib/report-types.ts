@@ -21,6 +21,8 @@ export type ReportRow = {
   visible: boolean;
   closed: boolean;
   closeNote: string;
+  /** 완결을 풀거나 완결 아카이브에서 재개한 시각. 다른 보고 범위에서 완결한 기록보다 뒤면 보고를 이어갑니다. */
+  reopenedAt?: string;
   previousPromise?: string;
   followup: string;
   delayReason: string;
