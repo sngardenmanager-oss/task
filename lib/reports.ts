@@ -97,6 +97,31 @@ export function inReportScope(
         (m) => inReportTeam(m, config.team) && ids.includes(m.id),
       );
 }
+/** 보고 범위를 바꿀 때 남길 행: 직접 추가한 행과, 새 범위에도 들어가는 업무·특이사항 행.
+ * 남긴 행은 써 둔 진행 내용·다음 계획을 그대로 유지합니다. */
+export function rowsKeptOnScopeChange(
+  rows: ReportRow[],
+  data: WorkspaceState,
+  actor: Member,
+  config: ReportConfig,
+) {
+  return rows.filter((row) => {
+    if (row.taskId) {
+      const task = data.tasks.find((t) => t.id === row.taskId);
+      return !!task && inReportScope(task, data, actor, config);
+    }
+    if (row.noteId) {
+      const note = data.notes.find((n) => n.id === row.noteId);
+      if (!note) return false;
+      return config.scope === 'mine'
+        ? note.createdBy === actor.id
+        : data.members.some(
+            (m) => m.id === note.createdBy && inReportTeam(m, config.team),
+          );
+    }
+    return true;
+  });
+}
 const statusNames = {
   scheduled: '예정',
   in_progress: '진행 중',

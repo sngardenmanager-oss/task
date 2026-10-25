@@ -60,6 +60,7 @@ import {
   previewStatistics,
   reportId,
   reportValidation,
+  rowsKeptOnScopeChange,
   sameReportValue,
   saveReport,
   inReportTeam,
@@ -440,20 +441,23 @@ export default function ReportsView({
         rows: report.rows.map((r) => (r.id === id ? { ...r, ...change } : r)),
       });
   }
+  function changeScope(config: ReportConfig) {
+    if (!report) return;
+    edit({
+      config,
+      rows: collectReportRows(
+        data,
+        actor,
+        config,
+        store.tracks,
+        rowsKeptOnScopeChange(report.rows, data, actor, config),
+      ),
+    });
+  }
   function configEdit(key: keyof ReportConfig, value: string) {
     if (!report) return;
     const config = { ...report.config, [key]: value };
-    if (key === 'scope' || key === 'team')
-      edit({
-        config,
-        rows: collectReportRows(
-          data,
-          actor,
-          config,
-          store.tracks,
-          report.rows.filter((r) => !r.taskId && !r.noteId),
-        ),
-      });
+    if (key === 'scope' || key === 'team') changeScope(config);
     else edit({ config });
   }
   async function save() {
@@ -806,6 +810,22 @@ export default function ReportsView({
             {scopeLabel(report.config)} ·{' '}
             {report.config.title} · 회의 {report.config.meetingDate}
           </p>
+          {actor.role === 'admin' && report.config.scope === 'mine' && !readOnly && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-[#fff6e5] px-3 py-2 text-sm text-[#7a5a12]">
+              <span>내 담당·협업 업무만 불러오는 보고서입니다. 써 둔 내용은 그대로 두고 팀원 업무를 더합니다.</span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="bg-white"
+                disabled={busy}
+                onClick={() =>
+                  changeScope({ ...report.config, scope: 'team', team: ALL_MEMBERS_TEAM })
+                }
+              >
+                전체 팀원 업무로 바꾸기
+              </Button>
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
