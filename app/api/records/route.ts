@@ -55,6 +55,27 @@ export async function GET(request: Request) {
       if (error) throw error;
       return Response.json({ items: data }, { headers });
     }
+    if (params.get('kind') === 'taskArchive') {
+      let query = db
+        .from('task_archive')
+        .select('task_id,completed_at,archived_at,payload')
+        .eq('team_id', team.id);
+      if (params.get('q'))
+        query = query.ilike(
+          'search_text',
+          `%${params.get('q')!.replace(/[%_]/g, '')}%`,
+        );
+      const page = Math.max(
+        0,
+        Math.min(10000, Math.floor(Number(params.get('page')) || 0)),
+      );
+      const { data, error } = await query
+        .order('completed_at', { ascending: false, nullsFirst: false })
+        .order('task_id')
+        .range(page * 20, page * 20 + 19);
+      if (error) throw error;
+      return Response.json({ items: data }, { headers });
+    }
     if (params.get('kind') === 'decisions') {
       let query = db
         .from('work_decisions')

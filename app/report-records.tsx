@@ -7,6 +7,8 @@ import type { ReportDocument } from '@/lib/report-types';
 import type { WorkDecision } from '@/lib/record-types';
 import type { Member, Task, WorkspaceState } from '@/lib/types';
 import { workflowLabels } from '@/lib/report-workflow';
+import { TASK_ARCHIVE_MONTHS } from '@/lib/retention';
+import type { ArchivedTask } from '@/lib/task-archive-store';
 
 export function LongTermReports({
   accessToken,
@@ -139,6 +141,147 @@ export function LongTermReports({
         </article>
       ))}
       {!busy && !items.length && <p>보관된 확정본이 없습니다.</p>}
+      <div className="flex gap-3">
+        <Button
+          variant="outline"
+          disabled={page === 0 || busy}
+          onClick={() => setPage((v) => v - 1)}
+        >
+          이전
+        </Button>
+        <span>{page + 1}쪽</span>
+        <Button
+          variant="outline"
+          disabled={items.length < 20 || busy}
+          onClick={() => setPage((v) => v + 1)}
+        >
+          다음
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/** 월 백업 때 작업공간에서 옮긴 완료 업무(완료 6개월 경과)를 찾아보는 읽기 전용 보관함입니다. */
+export function ArchivedTasks({
+  accessToken,
+  data,
+}: {
+  accessToken: string;
+  data: WorkspaceState;
+}) {
+  const teamId = useCurrentTeam()?.id;
+  const [items, setItems] = useState<ArchivedTask[]>([]);
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState(0);
+  const [open, setOpen] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      setBusy(true);
+      setError('');
+      fetch(
+        withTeam(
+          '/api/records?kind=taskArchive&page=' +
+            page +
+            '&q=' +
+            encodeURIComponent(query),
+          teamId,
+        ),
+        {
+          headers: { authorization: 'Bearer ' + accessToken },
+          signal: controller.signal,
+        },
+      )
+        .then(async (r) => {
+          const b = (await r.json()) as { error?: string; items: ArchivedTask[] };
+          if (!r.ok) throw new Error(b.error);
+          setItems(b.items);
+        })
+        .catch((e) => {
+          if (e.name !== 'AbortError') setError(e.message);
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setBusy(false);
+        });
+    }, 250);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [accessToken, teamId, page, query]);
+  const name = (id: string) =>
+    data.members.find((m) => m.id === id)?.name ?? '담당자 확인';
+  return (
+    <section className="space-y-3 rounded-2xl border bg-white p-4">
+      <h3 className="font-bold text-[#245b43]">업무 보관함</h3>
+      <p className="text-sm text-[#64776a]">
+        완료한 지 {TASK_ARCHIVE_MONTHS}개월이 지난 업무는 월 백업 때 캘린더·목록에서
+        빠지고 이곳에 체크리스트·댓글까지 그대로 보관됩니다.
+      </p>
+      <input
+        className="w-full rounded-lg border p-2"
+        aria-label="보관 업무 검색"
+        placeholder="업무 제목·내용 검색"
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setPage(0);
+        }}
+      />
+      {error && (
+        <p role="alert" className="text-red-700">
+          {error}
+        </p>
+      )}
+      {busy && <p>불러오는 중…</p>}
+      {items.map(({ task_id, completed_at, payload: task }) => (
+        <article className="rounded-xl bg-[#f4f6f2] p-3" key={task_id}>
+          <button
+            className="w-full text-left"
+            aria-expanded={open === task_id}
+            onClick={() => setOpen(open === task_id ? null : task_id)}
+          >
+            <strong>{task.title}</strong>
+            <p className="text-sm">
+              {data.categories.find((c) => c.id === task.categoryId)?.name ?? '기타'} ·{' '}
+              {[task.assigneeId, ...task.collaborators].map(name).join(', ')} · 일정{' '}
+              {task.date}
+              {task.endDate && task.endDate !== task.date ? '~' + task.endDate : ''} · 완료{' '}
+              {completed_at ? completed_at.slice(0, 10) : '기록 없음'}
+            </p>
+          </button>
+          {open === task_id && (
+            <div className="mt-2 space-y-2 border-t border-[#d8ded4] pt-2 text-sm">
+              {task.description && <p className="whitespace-pre-wrap">{task.description}</p>}
+              {task.checklist.length > 0 && (
+                <ul className="space-y-0.5">
+                  {task.checklist.map((item) => (
+                    <li key={item.id}>
+                      {item.done ? '☑' : '☐'} {item.text}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {task.comments.length > 0 && (
+                <ol className="space-y-1">
+                  {task.comments.map((comment) => (
+                    <li key={comment.id} className="rounded-lg bg-white p-2">
+                      <span className="text-xs text-[#64776a]">
+                        {name(comment.authorId)} · {comment.createdAt.slice(0, 10)}
+                      </span>
+                      <p className="whitespace-pre-wrap">{comment.body}</p>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          )}
+        </article>
+      ))}
+      {!busy && !items.length && <p>보관된 업무가 없습니다.</p>}
       <div className="flex gap-3">
         <Button
           variant="outline"

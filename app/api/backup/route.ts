@@ -13,11 +13,22 @@ import {
 import { listCompanyEvents } from '@/lib/company-events-store';
 import { dismissMasterAlert, listMasterAlerts } from '@/lib/master-alerts';
 import type { ReportStore } from '@/lib/report-types';
-import { isBackupDue, prunableReportIds, removeReports } from '@/lib/retention';
+import {
+  archivableTaskIds,
+  isBackupDue,
+  prunableReportIds,
+  removeArchivedTasks,
+  removeReports,
+} from '@/lib/retention';
 import { getSupabaseAdmin, isSupabaseConfigured } from '@/lib/supabase-server';
 import { reportOwnerFor } from '@/lib/team-access';
+import { archiveTasks } from '@/lib/task-archive-store';
 import { listTeams } from '@/lib/team-store';
-import { readWorkspaceState } from '@/lib/workspace-store';
+import {
+  readWorkspaceRow,
+  readWorkspaceState,
+  updateWorkspaceState,
+} from '@/lib/workspace-store';
 
 export const dynamic = 'force-dynamic';
 const headers = { 'cache-control': 'private, no-store, max-age=0' };
@@ -47,9 +58,9 @@ export async function GET(request: Request) {
     const params = new URL(request.url).searchParams;
     const recordTable = params.get('recordTable');
     if (recordTable) {
-      if (!['work_records','report_archive','work_decisions','meeting_records'].includes(recordTable)) throw new ApiError('지원하지 않는 백업 자료입니다.', 400);
+      if (!['work_records','report_archive','work_decisions','meeting_records','task_archive'].includes(recordTable)) throw new ApiError('지원하지 않는 백업 자료입니다.', 400);
       if (recordTable !== 'meeting_records' && (!teamId || !(await listTeams()).some(team => team.id === teamId))) throw new ApiError('백업할 팀을 확인해 주세요.', 400);
-      const key = recordTable === 'report_archive' ? 'report_id' : 'id';
+      const key = recordTable === 'report_archive' ? 'report_id' : recordTable === 'task_archive' ? 'task_id' : 'id';
       let query = getSupabaseAdmin().from(recordTable).select('*');
       if (recordTable === 'report_archive') query = query.eq('owner_id', reportOwnerFor(teamId!));
       else if (recordTable !== 'meeting_records') query = query.eq('team_id', teamId!);
@@ -105,7 +116,8 @@ export async function GET(request: Request) {
   }
 }
 
-/** 백업 완료 기록. prune=true이면 이번 백업에 포함된 확정 1개월 지난 주간보고서를 정리합니다.
+/** 백업 완료 기록. prune=true이면 이번 백업에 포함된 확정 1개월 지난 주간보고서를 정리하고,
+ * 완료한 지 6개월 지난 업무를 업무 보관함으로 옮깁니다.
  * 백업을 하지 않으면 이 요청이 오지 않으므로 아무것도 지워지지 않습니다. */
 export async function POST(request: Request) {
   try {
@@ -144,6 +156,7 @@ export async function POST(request: Request) {
     }
 
     const removed: Record<string, number> = {};
+    const archivedTasks: Record<string, number> = {};
     if (body.prune && isSupabaseConfigured()) {
       const db = getSupabaseAdmin();
       for (const team of (await listTeams()).filter((item) => item.active)) {
@@ -171,9 +184,31 @@ export async function POST(request: Request) {
             break;
           }
         }
+        // 완료 업무: 먼저 보관함에 넣고, 보관함에 들어간 것만 작업공간에서 뺍니다(중간에 실패해도 업무가 사라지지 않음).
+        const startedIso = new Date(started).toISOString();
+        const row = await readWorkspaceRow(team.id);
+        const ids = new Set(archivableTaskIds(row.state, now, startedIso));
+        if (!ids.size) continue;
+        const archived = row.state.tasks.filter((task) => ids.has(task.id));
+        const stored = await archiveTasks(team.id, archived);
+        const snapshot = new Map(archived.map((task) => [task.id, JSON.stringify(task)]));
+        const result = await updateWorkspaceState(
+          team.id,
+          (state) => {
+            const still = new Set(archivableTaskIds(state, now, startedIso));
+            // 보관함에 넣은 뒤 누가 고친 업무(댓글 추가 등)는 이번에는 남겨 두고 다음 백업 때 다시 옮깁니다.
+            const removable = state.tasks
+              .filter((task) => still.has(task.id) && stored.has(task.id) && snapshot.get(task.id) === JSON.stringify(task))
+              .map((task) => task.id);
+            return removeArchivedTasks(state, removable);
+          },
+          { ...row, audit: { id: user.id, name: user.email!, role: 'admin', note: '완료 업무 장기 보관' } },
+        );
+        const count = result.before.tasks.length - result.after.tasks.length;
+        if (count) archivedTasks[team.id] = count;
       }
     }
-    return Response.json({ ok: true, removed }, { headers });
+    return Response.json({ ok: true, removed, archivedTasks }, { headers });
   } catch (error) {
     return apiErrorResponse(error, '백업 기록을 저장하지 못했습니다.');
   }

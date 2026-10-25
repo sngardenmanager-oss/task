@@ -1,4 +1,5 @@
 import type { ReportStore } from './report-types';
+import type { Task, WorkspaceState } from './types';
 
 /** 저장 한 번에 주고받을 수 있는 양(Vercel 요청 한도 4.5MB)보다 조금 낮춘 안전선입니다. */
 export const REQUEST_LIMIT_BYTES = 4_000_000;
@@ -79,4 +80,79 @@ export function isBackupDue(now: Date, lastBackupAt?: string | null) {
   if (day > 3) return false;
   const monthStart = `${today.slice(0, 7)}-01`;
   return !lastBackupAt || kstDay(new Date(lastBackupAt)) < monthStart;
+}
+
+/** 완료한 지 이 개월 수가 지난 업무는 월 백업 때 작업공간에서 보관함으로 옮깁니다. */
+export const TASK_ARCHIVE_MONTHS = 6;
+
+export function taskArchiveCutoff(now: Date) {
+  const cutoff = new Date(now);
+  cutoff.setUTCMonth(cutoff.getUTCMonth() - TASK_ARCHIVE_MONTHS);
+  return cutoff.toISOString();
+}
+
+/** 완료 시각. 완료 시각 기록이 생기기 전의 업무는 상태 이력, 그것도 없으면 업무 날짜(끝나는 날)로 봅니다. */
+export function taskCompletedAt(task: Task) {
+  const at =
+    task.completedAt ??
+    [...(task.statusHistory ?? [])].reverse().find((entry) => entry.to === 'completed')?.at ??
+    `${task.endDate ?? task.date}T23:59:59+09:00`;
+  const time = Date.parse(at);
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+/** 보관할 업무: ① 최종 완료 ② 완료한 지 6개월이 지남 ③ 이번 백업에 포함됨(백업 시작 전에 완료).
+ * 메인·하위 일정이나 선행·관련 연결로 이어진 업무가 작업공간에 남는다면 함께 옮길 수 있을 때까지 남겨 둡니다.
+ * (한쪽만 옮기면 남은 업무의 하위 일정 목록·연결 표시가 끊깁니다.) */
+export function archivableTaskIds(
+  state: WorkspaceState,
+  now: Date,
+  backupStartedAt: string,
+) {
+  const cutoff = taskArchiveCutoff(now);
+  const started = new Date(backupStartedAt).toISOString();
+  const existing = new Set(state.tasks.map((task) => task.id));
+  const candidates = new Set(
+    state.tasks
+      .filter((task) => {
+        if (task.status !== 'completed') return false;
+        const at = taskCompletedAt(task);
+        return !!at && at < cutoff && at <= started;
+      })
+      .map((task) => task.id),
+  );
+  const neighbors = new Map<string, Set<string>>();
+  const connect = (a: string, b: string) => {
+    if (a === b || !existing.has(a) || !existing.has(b)) return;
+    for (const [from, to] of [[a, b], [b, a]]) {
+      if (!neighbors.has(from)) neighbors.set(from, new Set());
+      neighbors.get(from)!.add(to);
+    }
+  };
+  for (const task of state.tasks) {
+    if (task.parentId) connect(task.id, task.parentId);
+    for (const link of task.links ?? [])
+      if (!link.removedAt) connect(task.id, link.taskId);
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const id of candidates)
+      if ([...(neighbors.get(id) ?? [])].some((other) => !candidates.has(other))) {
+        candidates.delete(id);
+        changed = true;
+      }
+  }
+  return state.tasks.filter((task) => candidates.has(task.id)).map((task) => task.id);
+}
+
+/** 보관함으로 옮긴 업무를 작업공간에서 뺍니다. 삭제 기록(deletedIds)에 남겨 오래 열어 둔 화면이 다시 살리지 못하게 합니다. */
+export function removeArchivedTasks(state: WorkspaceState, ids: string[]): WorkspaceState {
+  if (!ids.length) return state;
+  const removed = new Set(ids);
+  return {
+    ...state,
+    tasks: state.tasks.filter((task) => !removed.has(task.id)),
+    deletedIds: [...new Set([...(state.deletedIds ?? []), ...ids])],
+  };
 }

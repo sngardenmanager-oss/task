@@ -10,7 +10,7 @@ import {
 import { useCurrentTeam, withTeam } from '@/app/team-context';
 import { byteLength, REQUEST_LIMIT_BYTES } from '@/lib/retention';
 import ReportWorkflowPanel from './report-workflow-panel';
-import { LongTermReports, ReportDecisions, RecordBrowser } from './report-records';
+import { ArchivedTasks, LongTermReports, ReportDecisions, RecordBrowser } from './report-records';
 import ReportProjects from './report-projects';
 import CorrectionPanel from './report-corrections-panel';
 import ClosedArchive from './report-closed-archive';
@@ -2152,6 +2152,7 @@ export default function ReportsView({
             확정한 지 1개월이 지난 보고서는 월 백업 후 위 목록에서 빠지고 아래 <b>장기 보관함</b>에 그대로 보관됩니다.
           </p>
           <LongTermReports accessToken={accessToken} onOpen={openRecordedReport} />
+          <ArchivedTasks accessToken={accessToken} data={data} />
           <ClosedArchive tracks={scopeTracks} disabled={readOnly || busy} onReopen={reopenTrack} />
         </TabsContent>
         <TabsContent value="records" className="space-y-4 pt-3">

@@ -5,8 +5,10 @@ import { DatabaseBackup, LoaderCircle, TriangleAlert, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { ReportStore } from '@/lib/report-types';
 import {
+  archivableTaskIds,
   HARD_LIMIT_BYTES,
   prunableReportIds,
+  TASK_ARCHIVE_MONTHS,
   WARNING_BYTES,
 } from '@/lib/retention';
 import type { CompanyEvent, MasterAlert, Team, WorkspaceState } from '@/lib/types';
@@ -23,7 +25,7 @@ type TeamBackup = { team: Team; workspace: WorkspaceState; reportStore: ReportSt
 type Step =
   | { kind: 'idle' }
   | { kind: 'working'; label: string }
-  | { kind: 'confirm'; startedAt: string; prunable: number }
+  | { kind: 'confirm'; startedAt: string; prunable: number; archivable: number }
   | { kind: 'done'; message: string };
 
 const dismissKey = 'snoopy-backup-dismissed';
@@ -31,7 +33,8 @@ const dismissKey = 'snoopy-backup-dismissed';
 const mb = (bytes: number) => `${(bytes / 1_000_000).toFixed(1)}MB`;
 
 /** 마스터 전용: 매월 1~3일 백업 알림, 전체 백업(업무·주간보고서 엑셀 + 복원용 파일), 용량 80% 경고.
- * 백업을 마쳐야만 확정 1개월 지난 주간보고서가 정리됩니다. 백업하지 않으면 아무것도 지워지지 않습니다. */
+ * 백업을 마쳐야만 확정 1개월 지난 주간보고서가 정리되고, 완료 6개월 지난 업무가 업무 보관함으로 옮겨집니다.
+ * 백업하지 않으면 아무것도 옮겨지지 않습니다. */
 export default function BackupReminder({
   accessToken,
   teams: knownTeams,
@@ -109,7 +112,7 @@ export default function BackupReminder({
         setStep({ kind: 'working', label: `${team.name} 자료 받는 중 (${index + 1}/${teams.length})` });
         const backup = await call<TeamBackup>(`/api/backup?team=${encodeURIComponent(team.id)}`);
         backup.records = {};
-        for (const table of ['work_records','report_archive','work_decisions']) backup.records[table] = await collectRecords(table, team.id);
+        for (const table of ['work_records','report_archive','work_decisions','task_archive']) backup.records[table] = await collectRecords(table, team.id);
         backups.push(backup);
       }
       const meetingRecords = await collectRecords('meeting_records');
@@ -133,7 +136,11 @@ export default function BackupReminder({
           sum + (item.reportStore ? prunableReportIds(item.reportStore, new Date(), startedAt).length : 0),
         0,
       );
-      setStep({ kind: 'confirm', startedAt, prunable });
+      const archivable = backups.reduce(
+        (sum, item) => sum + archivableTaskIds(item.workspace, new Date(), startedAt).length,
+        0,
+      );
+      setStep({ kind: 'confirm', startedAt, prunable, archivable });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '백업하지 못했습니다.');
       setStep({ kind: 'idle' });
@@ -143,16 +150,17 @@ export default function BackupReminder({
   async function complete(startedAt: string, prune: boolean) {
     setStep({ kind: 'working', label: '백업 기록 저장 중' });
     try {
-      const result = await call<{ removed: Record<string, number> }>('/api/backup', {
+      const result = await call<{ removed: Record<string, number>; archivedTasks?: Record<string, number> }>('/api/backup', {
         method: 'POST',
         body: JSON.stringify({ startedAt, prune }),
       });
       const removed = Object.values(result.removed).reduce((a, b) => a + b, 0);
+      const archived = Object.values(result.archivedTasks ?? {}).reduce((a, b) => a + b, 0);
       setStep({
         kind: 'done',
         message: prune
-          ? `백업을 기록했습니다. 확정 1개월 지난 주간보고서 ${removed}건을 정리했습니다.`
-          : '백업을 기록했습니다. 주간보고서는 정리하지 않았습니다.',
+          ? `백업을 기록했습니다. 확정 1개월 지난 주간보고서 ${removed}건을 정리하고, 완료 ${TASK_ARCHIVE_MONTHS}개월 지난 업무 ${archived}건을 업무 보관함으로 옮겼습니다.`
+          : '백업을 기록했습니다. 주간보고서와 업무는 정리하지 않았습니다.',
       });
       await loadStatus();
     } catch (caught) {
@@ -218,7 +226,7 @@ export default function BackupReminder({
             {Math.round((size.bytes / HARD_LIMIT_BYTES) * 100)}%입니다.{' '}
             {size.kind === 'report'
               ? '전체 백업을 하면 확정 1개월 지난 보고서가 정리되어 줄어듭니다.'
-              : '오래된 업무 정리가 필요합니다. 개발 담당에게 알려 주세요.'}
+              : `전체 백업을 하면 완료 ${TASK_ARCHIVE_MONTHS}개월 지난 업무가 업무 보관함으로 옮겨져 줄어듭니다. 그래도 크면 개발 담당에게 알려 주세요.`}
           </span>
         </div>
       ))}
@@ -239,7 +247,7 @@ export default function BackupReminder({
                 <span className="text-[#2f6b4f]">{step.message}</span>
               ) : (
                 <span className="text-[#5f6d64]">
-                  업무 엑셀·주간보고서 엑셀·복원용 파일을 내려받습니다. 백업해야만 확정 1개월 지난 주간보고서가 정리됩니다.
+                  업무 엑셀·주간보고서 엑셀·복원용 파일을 내려받습니다. 백업해야만 확정 1개월 지난 주간보고서와 완료 {TASK_ARCHIVE_MONTHS}개월 지난 업무가 정리됩니다.
                   {status.lastBackupAt
                     ? ` 마지막 백업: ${new Date(status.lastBackupAt).toLocaleString('ko-KR')}`
                     : ' 아직 백업 기록이 없습니다.'}
@@ -281,14 +289,15 @@ export default function BackupReminder({
                 백업 파일 3개를 내려받았습니다. <strong>회사 공유 드라이브 등 안전한 곳으로 옮겨 주세요.</strong>
               </p>
               <p className="mt-1">
-                확정한 지 1개월이 지난 주간보고서 <strong>{step.prunable}건</strong>이 이번 백업에 들어 있습니다.
-                정리하면 앱 화면에서는 사라지고 백업 파일로 보게 됩니다.
+                확정한 지 1개월이 지난 주간보고서 <strong>{step.prunable}건</strong>, 완료한 지 {TASK_ARCHIVE_MONTHS}개월이 지난 업무{' '}
+                <strong>{step.archivable}건</strong>이 이번 백업에 들어 있습니다. 정리하면 캘린더·목록에서는 빠지고, 보고서 탭의
+                장기 보관함과 업무 보관함에서 그대로 볼 수 있습니다.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <Button onClick={() => void complete(step.startedAt, true)}>
-                  {step.prunable ? `${step.prunable}건 정리하고 백업 완료` : '백업 완료'}
+                  {step.prunable + step.archivable ? `${step.prunable + step.archivable}건 정리하고 백업 완료` : '백업 완료'}
                 </Button>
-                {step.prunable > 0 && (
+                {step.prunable + step.archivable > 0 && (
                   <Button variant="outline" onClick={() => void complete(step.startedAt, false)}>
                     정리하지 않고 백업만 완료
                   </Button>
